@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------- raw sources
+# The original Gemini conversation exports are the source material for this
+# project. They are DELIBERATELY NOT TRACKED.
+#
+# They contain personal and family information — the owner's full name, rental
+# property details, and references to a family member's healthcare — that has no
+# business in a git history that may be pushed to a remote.
+#
+# They remain on disk as the design record. If this repository is private and you
+# want them versioned, delete the two lines below.
+1-creating_Jarvis_database.md
+17-Expanding_Jarvis_capabilities_Google_Gemini.md
+
+# ---------------------------------------------------------------- secrets
+# Nothing here should ever hold a credential, but this is the file that would.
+*.env
+.env
+*.key
+*.pem
+tokens/
+credentials.json
+*_token.json
+
+# ---------------------------------------------------------------- python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---------------------------------------------------------------- runtime state
+# Databases and generated artifacts are deployment state, not source.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+out/
+
+# ---------------------------------------------------------------- editors / os
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
