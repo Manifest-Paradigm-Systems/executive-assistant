@@ -14,7 +14,9 @@ After=jarvis-brain.service
 [Service]
 Type=oneshot
 WorkingDirectory=/var/home/admin/jarvis/brain
-ExecStart=/usr/bin/python3 /var/home/admin/jarvis/brain/devteam.py autopilot --max-items 3
+# -u: unbuffered. Every tick is killed at the 15-minute cap, so a block-buffered
+# stdout never flushes and the journal shows no decisions at all.
+ExecStart=/usr/bin/python3 -u /var/home/admin/jarvis/brain/devteam.py autopilot --max-items 3
 # Below the live assistant: dev work must never make Jarvis feel slow.
 Nice=10
 # 15 minutes, not 30. A tick that ran to the old cap had ONE item grinding inside it,
