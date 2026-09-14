@@ -46,6 +46,18 @@ _SYNTAX = re.compile(r"SyntaxError: ([^\n]{0,120})")
 _ASSERT = re.compile(r"AssertionError[^\n]{0,160}")
 _FRAME = re.compile(r'File "([^"]+)", line (\d+)')
 
+# Names that are only older names for something the image already has. For these the
+# operator advice is the wrong advice: adding PyPDF2 alongside pypdf, or Pillow
+# alongside PIL, installs the same library twice under two names, one of them dead.
+# Every one of these pairs was written by a coder reaching for the name it remembered.
+_ALIASES = {
+    "PyPDF2": "pypdf",
+    "PIL": "Pillow",
+    "fitz": "pymupdf",
+    "yaml": "PyYAML",
+    "sklearn": "scikit-learn",
+}
+
 
 @dataclass
 class Diagnosis:
@@ -109,6 +121,14 @@ def classify(output: str, *, provided=frozenset(), plan_paths=frozenset()) -> Di
     match = _NEEDS.search(text)
     if match:
         name = match.group(1).split(".")[0]
+        alias = _ALIASES.get(name)
+        if alias:
+            return Diagnosis(
+                "old_name", CODER, f"{name} -> {alias}",
+                f"'{name}' is the OLD name for '{alias}', which is what this environment "
+                f"has. Write `import {alias}` — the old name is the same library under a "
+                f"deprecated alias and is not installed. Do not ask for it to be added.",
+                True, match.group(0))
         if name in provided:
             return Diagnosis(
                 "missing_module", PLAN, name,

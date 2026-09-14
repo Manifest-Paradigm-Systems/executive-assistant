@@ -84,6 +84,13 @@ CORPUS = [
         "clobber", diagnose.CODER,
     ),
     (
+        "the deprecated name for a library the image already has (PyPDF2 vs pypdf)",
+        "documents/inspect.py:1: in <module>\n"
+        "    import PyPDF2\n"
+        "E   ModuleNotFoundError: No module named 'PyPDF2'",
+        "old_name", diagnose.CODER,
+    ),
+    (
         "an artifact nothing creates",
         "FileNotFoundError: [Errno 2] No such file or directory: 'tests/fixtures/sample_form.pdf'",
         "missing_artifact", diagnose.PLAN,
