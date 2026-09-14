@@ -228,6 +228,21 @@ writing the design around it.
 Report ONLY real problems. Do not invent issues. Do not comment on wording or style.
 If the plan is sound, say so — a false alarm wastes more time than it saves.
 
+A DEFECT ONE ITEM IS ASSIGNED TO FIX IS NOT A CONTRADICTION. You will sometimes find,
+by reading the specifications, that the code as it stands has a bug — a function
+imported directly and therefore not mockable by a test, a name that does not exist yet,
+a signature that has since changed. If an item's specification is the work of repairing
+exactly that, it is the repair, not an inconsistency: report `consistent: true` and let
+the item run. Only report a contradiction when two items demand things that cannot both
+be true at once. Reporting an assigned repair as a contradiction deadlocks the plan —
+it cannot become consistent until the work is done, and the work will not start until
+it is consistent.
+
+Also: nothing can be installed here. Never propose "install X", "add X to
+requirements.txt", or "install in development mode" as a fix; the sandbox has no
+network and the image is built by a human. If a library is genuinely absent, name it in
+`issues` and say plainly that an operator must add it to the image.
+
 THE PLAN:
 {plan}
 
