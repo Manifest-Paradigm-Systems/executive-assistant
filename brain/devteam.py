@@ -48,6 +48,7 @@ import traceback
 import time
 
 import db as jarvis_db
+import diagnose
 import editor
 import llm
 import sandbox
@@ -1028,6 +1029,22 @@ def _attempts(conn, item_id: str) -> int:
         " AND CAST(ts AS REAL) > ?", (item_id, boundary)).fetchone()["n"]
 
 
+def _diagnose_failure(conn, item, output):
+    """Whose problem is this failure, and what should be said about it?
+
+    The classification decides whether the item keeps spending attempts at all: an
+    operator fault or a harness fault is beyond the coder's reach, and retrying either
+    three times is how a missing library came to look like a coding problem.
+    """
+    provided: set = set()
+    plan_paths: set = set()
+    if item["plan_id"]:
+        provided = _plan_provides(conn, item["plan_id"])
+        for other in jarvis_db.list_items(conn, item["plan_id"]):
+            plan_paths |= named_paths(other["detail"] or "")
+    return diagnose.classify(output, provided=provided, plan_paths=plan_paths)
+
+
 def _editor_instruction(item, design: str) -> str:
     """What the editor is told. It gets the same design contract the coder path used —
     a swap of executor should not quietly downgrade the item's context."""
@@ -1249,8 +1266,9 @@ def run_item(conn, item, log=print) -> str:
             err, suggested = _builtin_attempt(conn, item, design, workspace, last_error, log)
         if err:
             last_error = err
+            diag = _diagnose_failure(conn, item, err)
             history.append(f"attempt {attempts} ({'editor' if via_editor else 'coder lane'})"
-                           f" made no usable change: {err[:600]}")
+                           f" made no usable change [{diag.kind}]: {diag.advice}")
             log(f"    attempt failed: {err[:160]}")
             continue
 
@@ -1264,8 +1282,19 @@ def run_item(conn, item, log=print) -> str:
             log(f"  -> {item_id} verified")
             return "verified"
         last_error = evidence
+        diag = _diagnose_failure(conn, item, evidence)
         history.append(f"attempt {attempts} ({'editor' if via_editor else 'coder lane'}) "
-                       f"changed files but the verify still failed:\n{evidence[:800]}")
+                       f"verify failed [{diag.kind}/{diag.owner}]:\n{diag.advice}\n"
+                       f"raw output:\n{evidence[:600]}")
+
+        if diag.stops_the_item:
+            log(f"    {diag.kind}: this is a {diag.owner} problem, not the coder's — "
+                f"stopping rather than spending the remaining attempts")
+            log(f"    {diag.advice[:200]}")
+            jarvis_db.set_item(conn, item_id, status="blocked", evidence=evidence[:2000],
+                               notes=f"{diag}\n\n{diag.advice}")
+            log(f"  -> {item_id} BLOCKED — {diag.owner} action required")
+            return "blocked"
 
         # Some broken commands only reveal themselves once the module they import
         # actually exists — `print(f('file'))` is valid Python right up until `f`
@@ -1769,6 +1798,68 @@ def _ready(conn, plan_id: str) -> bool:
     return jarvis_db.next_ready_item(conn, plan_id) is not None
 
 
+CANARY = os.getenv("DEVTEAM_CANARY", "full").strip().lower()
+CANARY_ROOT = os.getenv("DEVTEAM_CANARY_ROOT", os.path.expanduser("~/jarvis"))
+
+
+def run_canary(log=print) -> tuple[bool, str]:
+    """Can this system do the simplest possible thing, right now?
+
+    A smoke test that runs before any real work. One trivial item is written and
+    verified through the SAME paths a real item takes — the write guard, the sandbox,
+    the item loop, the status transition. If that fails, the harness is broken and no
+    amount of retrying will fix a plan, so the tick stops here rather than spending
+    fifteen minutes discovering it one failure at a time.
+
+    Everything that cost hours on 2026-09-13/14 — a verify path that always crashed, a
+    write that never landed, an image without the libraries — would have been caught
+    here in seconds, before a single real item was touched.
+    """
+    if CANARY == "off":
+        return True, "disabled (DEVTEAM_CANARY=off)"
+
+    ws = tempfile.mkdtemp(prefix="dt-canary-", dir=CANARY_ROOT)
+    saved_db = jarvis_db.DB_PATH
+    try:
+        # 1. The write path and the verify path, in the real sandbox.
+        fired: list[str] = []
+        apply_files(ws, [{"path": "hello.py", "content": "X = 42\n"}], fired)
+        if not os.path.exists(os.path.join(ws, "hello.py")):
+            return False, f"the write path produced no file ({fired})"
+        ok, evidence = run_verify(ws, 'python3 -c "import hello; assert hello.X == 42"')
+        if not ok:
+            return False, ("a trivial verify failed — the sandbox or its image is broken:\n"
+                           + evidence[-800:])
+        if CANARY != "full":
+            return True, "write and verify OK"
+
+        # 2. The item loop itself — executor, verify, status — on a throwaway database,
+        #    in its own workspace so the executor creates the file from scratch.
+        ws2 = tempfile.mkdtemp(prefix="dt-canary-loop-", dir=CANARY_ROOT)
+        try:
+            jarvis_db.DB_PATH = os.path.join(ws2, "canary.db")
+            conn = jarvis_db.open_db()
+            jarvis_db.add_item(conn, {
+                "id": "CANARY-1", "plan_id": "", "title": "canary",
+                "detail": "Create the file `hello.py` containing exactly the line `X = 42`.",
+                "verify": 'python3 -c "import hello; assert hello.X == 42"',
+                "workspace": ws2, "ordinal": 0, "status": "pending", "owner": "coder",
+                "depends_on": []})
+            item = conn.execute(
+                "SELECT * FROM work_items WHERE id='CANARY-1'").fetchone()
+            outcome = run_item(conn, item, log=lambda *a, **k: None)
+            if outcome != "verified":
+                return False, f"the item loop did not verify a trivial item (got: {outcome})"
+        finally:
+            shutil.rmtree(ws2, ignore_errors=True)
+        return True, "write, verify and the item loop all OK"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"the canary raised {type(exc).__name__}: {exc}"
+    finally:
+        jarvis_db.DB_PATH = saved_db
+        shutil.rmtree(ws, ignore_errors=True)
+
+
 def do_autopilot(max_items: int = 4, log=print) -> dict:
     """Work whatever is ready, across every plan that is fit to run.
 
@@ -1776,6 +1867,14 @@ def do_autopilot(max_items: int = 4, log=print) -> dict:
     remembers to push it: the scheduler calls this on a timer, so queued work actually
     moves. Bounded per call so a frequent tick stays cheap.
     """
+    # Before any real work: can we do the simplest thing at all?
+    canary_ok, canary_why = run_canary(log=log)
+    if not canary_ok:
+        log("!! CANARY FAILED — the harness itself is broken; starting no plan")
+        log(f"   {canary_why}")
+        return {"canary": "FAILED"}
+    log(f"canary OK — {canary_why}")
+
     conn = jarvis_db.open_db()
     plans = list(conn.execute(
         "SELECT id, title FROM plans WHERE approved=1 AND consistent=1"
@@ -2148,6 +2247,10 @@ def main() -> int:
             print("    " + out.replace("\n", "\n    ")[:400])
         else:
             print("  self-test      skipped (no sandbox)")
+        print("\ncanary:")
+        canary_ok, canary_why = run_canary(log=print)
+        print(f"  {'PASS' if canary_ok else 'FAIL'}  {canary_why}")
+
         print("\nlanes:")
         for role, url in llm.LANES.items():
             try:

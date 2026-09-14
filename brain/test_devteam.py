@@ -519,6 +519,38 @@ def run():
     finally:
         jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path5
 
+    print("\n-- the canary gates every tick --")
+    saved_canary = devteam.run_canary
+    devteam.run_canary = lambda log=None: (False, "synthetic failure")
+    try:
+        result = devteam.do_autopilot(1, log=lambda *a: None)
+    finally:
+        devteam.run_canary = saved_canary
+    # It must return before opening the database or looking at any plan.
+    check("a failed canary stops the tick before any real work",
+          result == {"canary": "FAILED"}, result)
+
+    saved_mode = devteam.CANARY
+    devteam.CANARY = "quick"
+    try:
+        canary_ok, canary_why = devteam.run_canary(log=lambda *a: None)
+    finally:
+        devteam.CANARY = saved_mode
+    # The 'quick' tier only writes a file and verifies it, so it is safe to run here;
+    # 'full' would call a model lane and belongs in doctor, not in the unit suite.
+    check("the write-and-verify canary passes on this machine", canary_ok is True, canary_why)
+
+    print("\n-- a failure is routed to the right owner --")
+    # The three shapes that cost the most on 2026-09-13/14, through the real helper.
+    check("the classifier is reachable from the runner",
+          callable(getattr(devteam, "_diagnose_failure", None)))
+    import diagnose as _diag
+    check("a missing library is an operator problem, not a coding problem",
+          _diag.classify("ModuleNotFoundError: No module named 'click'").owner
+          == _diag.OPERATOR)
+    check("and the runner refuses to spend attempts on it",
+          _diag.classify("ModuleNotFoundError: No module named 'click'").stops_the_item is True)
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 
