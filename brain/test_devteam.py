@@ -582,6 +582,24 @@ def run():
         devteam.ITEM_BUDGET = saved_budget
         jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path6
 
+    print("\n-- a respec may not aim the verify at another item's test --")
+    # The live failure: JV-002's verify was rewritten to run JV-000's fixtures test.
+    check("a verify running an unmentioned test file is caught",
+          devteam.verify_runs_unrelated_file(
+              "python -m pytest tests/test_fixtures.py -v",
+              "Modify `documents/fill.py` to fill PDF form fields.") == "tests/test_fixtures.py")
+    check("a verify running the item's own test is fine",
+          devteam.verify_runs_unrelated_file(
+              "python -m pytest tests/test_fill.py",
+              "Create `documents/fill.py` and `tests/test_fill.py`.") is None)
+    check("an inline -c verify runs no file at all",
+          devteam.verify_runs_unrelated_file(
+              'python3 -c "import documents.fill; documents.fill.fill_form(1, {})"',
+              "Modify `documents/fill.py`.") is None)
+    check("and a bare module import is not mistaken for a path",
+          devteam.verify_runs_unrelated_file(
+              'python3 -m pytest', "Modify `documents/fill.py`.") is None)
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 

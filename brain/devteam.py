@@ -1082,6 +1082,27 @@ def named_paths(text: str) -> set:
             re.finditer(r"[A-Za-z_][\w./-]*\.(?:py|pdf|txt|json|md)\b", text or "")}
 
 
+_RUNS_PY = re.compile(r"\b(?:python3?|pytest)\s+(?:-m\s+pytest\s+)?([\w][\w./-]*\.py)\b")
+
+
+def verify_runs_unrelated_file(command: str, detail: str) -> str | None:
+    """A file this verify RUNS that the specification never mentions.
+
+    The repair path may rewrite a verify, and it has rewritten one that exercised the
+    item's own module into a run of a test file belonging to a different item — which
+    cannot fail for anything this item does. The item would then be marked verified on
+    work it never did, which is worse than a weak check: it is a check of the wrong
+    thing, and it reports success.
+    """
+    named = named_paths(detail or "")
+    for match in _RUNS_PY.finditer(command or ""):
+        path = match.group(1)
+        if not any(path == n or path.endswith("/" + n) or n.endswith("/" + path)
+                   for n in named):
+            return path
+    return None
+
+
 def sole_owner(conn, item, rel_path: str) -> bool:
     """Is this file uncontested — named by no item in the plan other than this one?
 
@@ -1345,11 +1366,18 @@ def run_item(conn, item, log=print) -> str:
         jarvis_db.set_item(conn, item_id, options=options_json)
 
     if verdict == "respec" and rdata.get("detail"):
+        new_detail = rdata["detail"]
+        proposed = clean_verify(rdata.get("verify") or item["verify"])
+        unrelated = verify_runs_unrelated_file(proposed, new_detail)
+        if unrelated:
+            log(f"    the respec's verify runs {unrelated}, which this specification "
+                f"never mentions — keeping the previous verify")
+            proposed = clean_verify(item["verify"] or "")
         jarvis_db.add_item(conn, {
             "id": item_id, "plan_id": item["plan_id"], "ordinal": item["ordinal"],
             "title": (rdata.get("title") or item["title"])[:200],
-            "detail": rdata["detail"],
-            "verify": clean_verify(rdata.get("verify") or item["verify"]),
+            "detail": new_detail,
+            "verify": proposed,
             "workspace": workspace, "depends_on": item["depends_on"],
             "status": "pending", "owner": "coder",
             "notes": f"respec after {attempts} failures: {rdata.get('reason', '')[:300]}",
