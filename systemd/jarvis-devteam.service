@@ -17,4 +17,8 @@ WorkingDirectory=/var/home/admin/jarvis/brain
 ExecStart=/usr/bin/python3 /var/home/admin/jarvis/brain/devteam.py autopilot --max-items 3
 # Below the live assistant: dev work must never make Jarvis feel slow.
 Nice=10
-TimeoutStartSec=1800
+# 15 minutes, not 30. A tick that ran to the old cap had ONE item grinding inside it,
+# and the tick is the wrong unit of work to lose to that. The next tick reclaims whatever
+# was interrupted, and attempts are counted from the runs table rather than from a local
+# counter, so a short cap costs a retry instead of losing the escalation.
+TimeoutStartSec=900

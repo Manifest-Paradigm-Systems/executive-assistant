@@ -60,6 +60,11 @@ MAX_ATTEMPTS = int(os.getenv("DEVTEAM_MAX_ATTEMPTS", "3"))
 # comfortably ABOVE what a full plan needs rather than just above the average.
 DIRECTOR_TOKENS = int(os.getenv("DEVTEAM_DIRECTOR_TOKENS", "12000"))
 REPAIR_TOKENS = int(os.getenv("DEVTEAM_REPAIR_TOKENS", "8000"))
+
+# How long one item may hold a tick. A tick that ran 32 minutes against its 30-minute
+# cap was one item grinding, so the item gets a budget of its own — checked between
+# attempts, since a running editor call cannot be interrupted safely from here.
+ITEM_BUDGET = int(os.getenv("DEVTEAM_ITEM_BUDGET", "420"))
 VERIFY_TIMEOUT = int(os.getenv("DEVTEAM_VERIFY_TIMEOUT", "300"))
 FILE_LIST_LIMIT = 120
 # The coder slot is 32k (see /props), and a prompt that has to quote an existing file
@@ -913,8 +918,23 @@ def _wrap(text: str, width: int) -> list[str]:
 # ------------------------------------------------------------------ execution
 
 def _attempts(conn, item_id: str) -> int:
-    return conn.execute("SELECT count(*) n FROM runs WHERE item_id=? AND role='coder'",
-                        (item_id,)).fetchone()["n"]
+    """Attempts spent on this item's CURRENT specification.
+
+    Counted from the runs table rather than from a local counter: a tick killed
+    mid-item is reclaimed by the next one, and a counter that restarted at zero
+    there would retry the same executor forever and never reach either the
+    three-strike escalation or the alternate executor.
+
+    The boundary is the last director consult. The repair pass that follows one
+    either re-specs the item or blocks it, so a fresh specification starts at zero
+    without needing a schema change or a respec flag.
+    """
+    boundary = conn.execute(
+        "SELECT COALESCE(MAX(CAST(ts AS REAL)), 0) t FROM runs"
+        " WHERE item_id=? AND role='director'", (item_id,)).fetchone()["t"]
+    return conn.execute(
+        "SELECT count(*) n FROM runs WHERE item_id=? AND role IN ('coder','editor')"
+        " AND CAST(ts AS REAL) > ?", (item_id, boundary)).fetchone()["n"]
 
 
 def _editor_instruction(item, design: str) -> str:
@@ -930,6 +950,54 @@ def _editor_instruction(item, design: str) -> str:
     return "\n".join(parts)
 
 
+_SNAPSHOT_SKIP = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
+
+
+def workspace_snapshot(workspace: str) -> dict:
+    """{relative path: (mtime_ns, size)} for everything under the workspace."""
+    snap = {}
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in _SNAPSHOT_SKIP]
+        for name in files:
+            full = os.path.join(root, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            snap[os.path.relpath(full, workspace)] = (st.st_mtime_ns, st.st_size)
+    return snap
+
+
+def named_paths(text: str) -> set:
+    """Files a specification names, e.g. `pkg/mod.py`."""
+    return {m.group(0).rstrip(".,;:") for m in
+            re.finditer(r"[A-Za-z_][\w./-]*\.(?:py|pdf|txt|json|md)\b", text or "")}
+
+
+def wrote_named_file(named, changed) -> bool:
+    """Did the run touch a file the specification actually names?
+
+    Exact match, or the named path appearing as a suffix — a detail may say
+    `read/__init__.py` where the real path is `visual_lookup/read/__init__.py`.
+
+    The strictness here is the whole point. `visual_lookup/read/x.py` written to
+    `visual_lookup/visual_lookup/read/x.py` IS a suffix match, and accepting it would
+    pass the exact failure this guard exists to catch: the editor resolving a
+    workspace-relative path against a root one level too deep. So a prefix whose last
+    component repeats the named path's first component is treated as no match.
+    """
+    for n in named:
+        for c in changed:
+            if c == n:
+                return True
+            if c.endswith("/" + n):
+                prefix = c[: -len(n) - 1]
+                if prefix.split("/")[-1] == n.split("/")[0]:
+                    continue
+                return True
+    return False
+
+
 def _editor_attempt(conn, item, design: str, workspace: str, last_error: str, log):
     """One attempt via the editor container. Returns (error, suggested verify).
 
@@ -940,15 +1008,33 @@ def _editor_attempt(conn, item, design: str, workspace: str, last_error: str, lo
     if last_error:
         instruction += (f"\n\nThe previous attempt failed. The verify command reported:"
                         f"\n{last_error[-1500:]}\n\nFix that specific failure.")
+    before = workspace_snapshot(workspace)
     res = editor.run(workspace, instruction)
+    after = workspace_snapshot(workspace)
+    changed = {p for p, v in after.items() if before.get(p) != v}
+
     jarvis_db.log_run(conn, role="editor", prompt=instruction, output=res.transcript,
                       ok=res.ok, ms=int(res.seconds * 1000), plan_id=item["plan_id"],
                       item_id=item["id"], engine="aider")
     if res.changed:
         log(f"    edited: {', '.join(res.changed)}  [{res.seconds:.0f}s]")
-    if res.ok:
-        return "", None
-    return (res.error or "the editor made no change"), None
+
+    if not res.ok:
+        return (res.error or "the editor made no change"), None
+
+    # The editor reports success in its own terms; check the claim against the disk.
+    # A relative path resolved against the wrong root still reports "Applied edit",
+    # and the attempt is then burnt on a verify that was never going to pass. That
+    # happened twice on 2026-09-14: the file the item named stayed at 0 bytes while
+    # a doubled path — visual_lookup/visual_lookup/read/__init__.py — was written.
+    named = named_paths(item["detail"] or "")
+    if named and not wrote_named_file(named, changed):
+        return (f"the editor reported success but wrote none of the files this item "
+                f"names ({', '.join(sorted(named))}). It did touch: "
+                f"{', '.join(sorted(changed)) or 'nothing'}. A relative path was almost "
+                f"certainly resolved against the wrong directory — write each file to "
+                f"the exact path in the specification, relative to the workspace root."), None
+    return "", None
 
 
 def _builtin_attempt(conn, item, design: str, workspace: str, last_error: str, log):
@@ -1006,9 +1092,12 @@ def run_item(conn, item, log=print) -> str:
     jarvis_db.set_item(conn, item_id, status="in-progress")
     log(f"\n=== {item_id}: {item['title']}")
 
-    attempts = 0
+    attempts = _attempts(conn, item_id)
     last_error = ""
     history: list[str] = []
+    started = time.time()
+    if attempts:
+        log(f"  resuming: {attempts} attempt(s) already spent on this specification")
 
     # A verify that cannot fail is a planning defect. Handing it to the coder
     # would burn three attempts proving nothing, so go straight to the director.
@@ -1020,6 +1109,13 @@ def run_item(conn, item, log=print) -> str:
         attempts = MAX_ATTEMPTS
 
     while attempts < MAX_ATTEMPTS:
+        if time.time() - started > ITEM_BUDGET:
+            last_error = (f"this item used its whole {ITEM_BUDGET}s budget for this tick "
+                          f"without passing. Last error:\n{last_error[-800:]}")
+            history.append(f"ran out of the {ITEM_BUDGET}s item budget after "
+                           f"{attempts} attempt(s) this tick")
+            log(f"    item budget ({ITEM_BUDGET}s) exhausted — leaving it for the next tick")
+            break
         attempts += 1
         via_editor = executor_for_attempt(attempts)
         log(f"  attempt {attempts}/{MAX_ATTEMPTS} via {'editor' if via_editor else 'coder lane'}")

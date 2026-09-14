@@ -400,6 +400,48 @@ def run():
     check("and the coder is told which libraries exist, not that none do",
           "pypdf" in devteam.CODER_PROMPT and "standard library only" not in devteam.CODER_PROMPT)
 
+    print("\n-- a short tick must still converge (attempts survive a reclaim) --")
+    saved_path4, saved_db4 = jdb.DB_PATH, devteam.jarvis_db.DB_PATH
+    jdb.DB_PATH = devteam.jarvis_db.DB_PATH = os.path.join(tempfile.mkdtemp(), "grind.db")
+    try:
+        conn = jdb.open_db()
+
+        def spent(role, item="G-1"):
+            jdb.log_run(conn, role=role, prompt="p", output="o", ok=True, ms=1,
+                        plan_id="", item_id=item, engine="test")
+
+        check("a fresh item starts at zero", devteam._attempts(conn, "G-1") == 0)
+        spent("editor")
+        spent("coder")
+        check("both executors count as attempts", devteam._attempts(conn, "G-1") == 2)
+        spent("director")
+        check("a director consult resets the count, so a respec starts clean",
+              devteam._attempts(conn, "G-1") == 0)
+        spent("editor")
+        check("and counting resumes after it", devteam._attempts(conn, "G-1") == 1)
+        check("attempts do not leak between items", devteam._attempts(conn, "G-2") == 0)
+    finally:
+        jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path4
+
+    print("\n-- the editor's success claim is checked against the disk --")
+    named = devteam.named_paths("Edit `visual_lookup/read/__init__.py` and create a.py")
+    check("paths are read out of a specification",
+          {"visual_lookup/read/__init__.py", "a.py"} <= named, named)
+    check("a write to the named file counts",
+          devteam.wrote_named_file({"pkg/m.py"}, {"pkg/m.py"}) is True)
+    check("a suffix match counts too",
+          devteam.wrote_named_file({"read/__init__.py"}, {"visual_lookup/read/__init__.py"})
+          is True)
+    # The live failure: the item named one file, the editor wrote a doubled path.
+    check("a write somewhere else does NOT count",
+          devteam.wrote_named_file(
+              {"visual_lookup/read/__init__.py"},
+              {"visual_lookup/visual_lookup/read/__init__.py"}) is False)
+    check("and neither does touching nothing",
+          devteam.wrote_named_file({"a.py"}, set()) is False)
+    check("the item budget leaves room for more than one attempt",
+          devteam.ITEM_BUDGET >= 300, devteam.ITEM_BUDGET)
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 
