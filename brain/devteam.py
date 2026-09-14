@@ -120,13 +120,19 @@ Break this into work items. HARD CONSTRAINTS:
        Pillow         imaging
    Use these and no others. An item that imports anything outside this list cannot
    pass — there is no network to install it — and it blocks every item behind it.
-7. NAME THINGS BY FULL PATH, ALWAYS. Write every file as its complete path from the
+7. THE ONLY THING THAT RUNS IS THE VERIFY. The coder writes files; it cannot execute
+   anything. So an item must never depend on a step someone has to perform: "write a
+   generator script and run it" leaves the artifact unbuilt and the item unpassable
+   forever — that has already cost this plan 44 attempts. Either the artifact is
+   produced by writing a file directly, or the VERIFY command itself generates it as
+   part of checking it (e.g. run the generator, then assert on what it produced).
+8. NAME THINGS BY FULL PATH, ALWAYS. Write every file as its complete path from the
    workspace root — `visual_lookup/read/__init__.py`, never `read/__init__.py` and never a
    bare `__init__.py`. The coder is given these paths as the exact set of files it may
    edit, so an incomplete path is either an un-editable item or, worse, a file created in
    the wrong place. A bare `__init__.py` in a specification has already produced a stray
    file one directory off.
-8. Say MODULE or PACKAGE explicitly. A module and a package cannot share a name: if both
+9. Say MODULE or PACKAGE explicitly. A module and a package cannot share a name: if both
    exist, Python SILENTLY prefers the package and the module becomes dead code that still
    looks fine. To add a function to something an earlier item created, name the exact file
    — `thing/__init__.py`, not `thing.py`. Getting this wrong has cost this team four items.
@@ -255,6 +261,11 @@ FILES PRESENT IN THE WORKSPACE (the plan may disagree with reality — check car
 especially for a name that exists BOTH as a module `x.py` and a package `x/`; the package
 wins the import and the module becomes dead code):
 {listing}
+
+A NOTE ON WHAT CAN BE EXECUTED: the coder writes files and nothing else — only the
+VERIFY command runs. Do not respec an item into "write a script and run it", because
+nothing will ever run it. If an artifact must exist before the check, the verify
+command has to produce it as part of the check.
 
 ALWAYS OFFER OPTIONS. This is a standing instruction from the owner. Never present a single
 way forward when there is a real choice: give the human 2 to 4 genuinely different ways to
