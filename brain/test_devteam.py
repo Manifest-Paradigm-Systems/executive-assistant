@@ -551,6 +551,37 @@ def run():
     check("and the runner refuses to spend attempts on it",
           _diag.classify("ModuleNotFoundError: No module named 'click'").stops_the_item is True)
 
+    print("\n-- running out of tick time is not running out of attempts --")
+    saved_path6, saved_db6 = jdb.DB_PATH, devteam.jarvis_db.DB_PATH
+    jdb.DB_PATH = devteam.jarvis_db.DB_PATH = os.path.join(tempfile.mkdtemp(), "budget.db")
+    saved_budget = devteam.ITEM_BUDGET
+    try:
+        conn = jdb.open_db()
+        ws3 = tempfile.mkdtemp(prefix="dt-budget-")
+        jdb.add_item(conn, {"id": "B-1", "plan_id": "", "title": "t", "detail": "make a.py",
+                            "verify": 'python3 -c "import a; assert a.X == 1"',
+                            "workspace": ws3, "ordinal": 1, "status": "pending",
+                            "owner": "coder", "depends_on": []})
+        item = conn.execute("SELECT * FROM work_items WHERE id='B-1'").fetchone()
+
+        devteam.ITEM_BUDGET = 0          # the clock is already gone before attempt 1
+        outcome = devteam.run_item(conn, item, log=lambda *a, **k: None)
+        check("an item out of tick time is left for the next tick",
+              outcome == "reclaimed", outcome)
+        consults = conn.execute(
+            "SELECT count(*) FROM runs WHERE item_id='B-1' AND role='director'").fetchone()[0]
+        check("and the director was NOT consulted, so its spec is not respec'd",
+              consults == 0, f"{consults} consult(s)")
+        check("and the item keeps its attempt count",
+              devteam._attempts(conn, "B-1") == 0, devteam._attempts(conn, "B-1"))
+        check("and it is queued for the next tick",
+              conn.execute("SELECT status FROM work_items WHERE id='B-1'").fetchone()[0]
+              == "pending")
+        shutil.rmtree(ws3, ignore_errors=True)
+    finally:
+        devteam.ITEM_BUDGET = saved_budget
+        jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path6
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 

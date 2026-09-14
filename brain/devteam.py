@@ -1251,12 +1251,19 @@ def run_item(conn, item, log=print) -> str:
 
     while attempts < MAX_ATTEMPTS:
         if time.time() - started > ITEM_BUDGET:
-            last_error = (f"this item used its whole {ITEM_BUDGET}s budget for this tick "
-                          f"without passing. Last error:\n{last_error[-800:]}")
+            # Out of clock, not out of attempts. Returning here rather than falling
+            # through to the director below is the whole point: a director consult
+            # respecs the item and resets its attempt count, so escalating a healthy
+            # specification that merely needs longer produces a loop with no exit —
+            # one attempt per tick, count reset, forever.
             history.append(f"ran out of the {ITEM_BUDGET}s item budget after "
                            f"{attempts} attempt(s) this tick")
-            log(f"    item budget ({ITEM_BUDGET}s) exhausted — leaving it for the next tick")
-            break
+            log(f"    item budget ({ITEM_BUDGET}s) exhausted after {attempts} attempt(s) — "
+                f"leaving it for the next tick with its attempts intact")
+            jarvis_db.set_item(conn, item_id, status="pending",
+                               notes=f"out of tick time after {attempts} attempt(s); "
+                                     f"resumes next tick")
+            return "reclaimed"
         attempts += 1
         via_editor = executor_for_attempt(attempts)
         log(f"  attempt {attempts}/{MAX_ATTEMPTS} via {'editor' if via_editor else 'coder lane'}")
