@@ -506,6 +506,27 @@ def set_item(conn: sqlite3.Connection, item_id: str, *, status: str | None = Non
 
 # ------------------------------------------------------------------ runs
 
+# The runs table is this team's black box, and a black box that edits the tape is worse
+# than none: it used to store (prompt or "")[:8000] / (output or "")[:8000] with nothing
+# marking the cut. That silently rewrote history — 16 of the first 107 director prompts
+# were stored truncated, and replaying one of those hands the model a different task than
+# the one it actually answered. (Replay is exactly how the Q8-vs-Q5 question gets asked,
+# and those rows could not answer it.) The ceiling stays, because a runaway prompt on a
+# shared box is a real risk, but truncation now ANNOUNCES ITSELF inside the record, so no
+# reader — replay harness, judge, or human — can mistake a partial record for a whole one.
+RUN_TEXT_LIMIT = int(os.getenv("JARVIS_RUN_TEXT_LIMIT", "200000"))
+
+
+def _clip(text: str) -> str:
+    """The text in full, or the ceiling's worth with the loss stated in the record."""
+    s = text or ""
+    if len(s) <= RUN_TEXT_LIMIT:
+        return s
+    return (s[:RUN_TEXT_LIMIT]
+            + f"\n\n[TRUNCATED BY log_run: {len(s)} chars total, "
+              f"{len(s) - RUN_TEXT_LIMIT} dropped]")
+
+
 def log_run(conn: sqlite3.Connection, *, role: str, prompt: str, output: str, ok: bool,
             ms: int, plan_id: str | None = None, item_id: str | None = None,
             engine: str | None = None) -> None:
@@ -513,8 +534,8 @@ def log_run(conn: sqlite3.Connection, *, role: str, prompt: str, output: str, ok
         conn.execute(
             "INSERT INTO runs (ts, plan_id, item_id, role, engine, prompt, output, ok, ms)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
-            (time.time(), plan_id, item_id, role, engine, (prompt or "")[:8000],
-             (output or "")[:8000], 1 if ok else 0, ms))
+            (time.time(), plan_id, item_id, role, engine, _clip(prompt), _clip(output),
+             1 if ok else 0, ms))
 
 
 # ------------------------------------------------------------------ cursors / sessions

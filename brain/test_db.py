@@ -131,6 +131,35 @@ def run():
     db.log_run(conn, role="coder", prompt="do it", output="did it", ok=True, ms=1200,
                plan_id=pid, item_id="JV-001", engine=":8082")
     check("run is audited", conn.execute("SELECT count(*) c FROM runs").fetchone()["c"] == 1)
+
+    print("\n-- runs: the record is the whole exchange, or it says so --")
+    # 16k chars, comfortably past the old silent 8000-char cut. A replay of a clipped
+    # prompt asks the model something other than what it was asked, which is how a
+    # comparison of two builds turns into a comparison of two different tasks.
+    long_prompt = "CONTEXT LINE FOR A REPLAY. " * 600
+    db.log_run(conn, role="director", prompt=long_prompt, output="short", ok=True, ms=5)
+    stored = conn.execute("SELECT prompt FROM runs WHERE role='director'").fetchone()["prompt"]
+    check("a long prompt is stored whole", stored == long_prompt,
+          f"stored {len(stored)} of {len(long_prompt)} chars")
+
+    old_limit = db.RUN_TEXT_LIMIT
+    db.RUN_TEXT_LIMIT = 100
+    try:
+        db.log_run(conn, role="director", prompt="x" * 250, output="y" * 250, ok=True, ms=5)
+        row = conn.execute("SELECT prompt, output FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()
+        check("past the ceiling, the kept text is the ceiling",
+              row["prompt"].startswith("x" * 100) and not row["prompt"].startswith("x" * 101))
+        check("and the record admits it was cut, and by how much",
+              "TRUNCATED BY log_run" in row["prompt"] and "250 chars total" in row["prompt"]
+              and "150 dropped" in row["prompt"])
+        check("the answer is clipped by the same rule",
+              "TRUNCATED BY log_run" in row["output"])
+    finally:
+        db.RUN_TEXT_LIMIT = old_limit
+    db.log_run(conn, role="director", prompt="z" * 50, output="ok", ok=True, ms=1)
+    check("under the ceiling nothing is added to the record",
+          conn.execute("SELECT prompt FROM runs ORDER BY rowid DESC LIMIT 1")
+          .fetchone()["prompt"] == "z" * 50)
     db.set_cursor(conn, "memory", "42")
     db.set_cursor(conn, "memory", "43")
     check("cursor updates in place", db.get_cursor(conn, "memory") == "43")
