@@ -271,6 +271,12 @@ especially for a name that exists BOTH as a module `x.py` and a package `x/`; th
 wins the import and the module becomes dead code):
 {listing}
 
+NAME EVERY FILE BY ITS FULL PATH, ALWAYS. A respec's detail must give each file as its
+complete path from the workspace root — `visual_lookup/tests/test_cli.py`, never
+`test_cli.py` or "the CLI and tests". The coder is handed these paths as the exact set of
+files it may edit, and code that matches paths against a specification cannot match a
+specification that names none. A path-free respec has already cost this team hours.
+
 A NOTE ON WHAT CAN BE EXECUTED: the coder writes files and nothing else — only the
 VERIFY command runs. Do not respec an item into "write a script and run it", because
 nothing will ever run it. If an artifact must exist before the check, the verify
@@ -1034,18 +1040,24 @@ def named_paths(text: str) -> set:
 
 
 def sole_owner(conn, item, rel_path: str) -> bool:
-    """Does this item alone name this file among its plan's items?
+    """Is this file uncontested — named by no item in the plan other than this one?
 
     The clobber guard protects against two items naming one file, where the second
-    write silently deletes the first's work. That is a real failure and it keeps its
-    protection. But a file only this item names is this item's own deliverable, and
-    refusing to let it rewrite that file stops it repairing its own work — which is
-    what VISUAL2:JV-006 hit: it could not rewrite the test file it had just created.
+    write silently deletes the first's work. That failure keeps its protection exactly.
+
+    What it must NOT do is stop an item repairing its own work. A file no other item
+    names has no other claimant, so refusing the write protects nobody. VISUAL2:JV-006
+    hit this for hours: it could not rewrite the test file it had just created.
+
+    An earlier version also required the writing item's own detail to name the file.
+    That was wrong, because REPAIR_PROMPT is free to return a path-free detail — "modify
+    the CLI and tests" — and then the check could never fire at all. Contest is the
+    question; who mentioned it in passing is not.
     """
     if not item["plan_id"]:
         return False
     rel = (rel_path or "").replace("\\", "/")
-    if rel not in named_paths(item["detail"] or ""):
+    if not rel:
         return False
     for other in jarvis_db.list_items(conn, item["plan_id"]):
         if other["id"] == item["id"]:
@@ -1149,9 +1161,12 @@ def _builtin_attempt(conn, item, design: str, workspace: str, last_error: str, l
         return "reply was not parseable JSON", None
 
     aplog: list[str] = []
-    owned = {p for p in named_paths(item["detail"] or "")
-             if sole_owner(conn, item, p)}
-    apply_files(workspace, data.get("files") or [], aplog, owned=owned)
+    # Ownership is a property of the file being written, not of the specification:
+    # a vague respec detail must not leave the item unable to write its own files.
+    files = data.get("files") or []
+    owned = {(f.get("path") or "") for f in files if isinstance(f, dict)}
+    owned = {p for p in owned if p and sole_owner(conn, item, p)}
+    apply_files(workspace, files, aplog, owned=owned)
     apply_diffs(workspace, data.get("diffs") or [], aplog)
     for line in aplog:
         log(f"    {line}")

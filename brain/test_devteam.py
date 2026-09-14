@@ -503,8 +503,13 @@ def run():
         # The guard's whole reason for existing: two items naming one file.
         check("a file two items name is NOT owned",
               devteam.sole_owner(conn, shared, "pkg/shared.py") is False)
-        check("and a file this item never mentions is not owned",
-              devteam.sole_owner(conn, mine, "pkg/shared.py") is False)
+        # Contest is the question, not who mentioned it. A file no other item names is
+        # uncontested even when the writing item's own detail is vague — which is what
+        # a respec produces.
+        check("an unmentioned but uncontested file is owned",
+              devteam.sole_owner(conn, mine, "pkg/unmentioned.py") is True)
+        check("an empty path is never owned",
+              devteam.sole_owner(conn, mine, "") is False)
     finally:
         jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path5
 
