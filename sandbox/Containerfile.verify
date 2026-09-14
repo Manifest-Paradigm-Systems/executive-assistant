@@ -1,0 +1,13 @@
+# The devteam verify image.
+#
+# Verifies run with --network=none, so nothing can be installed at check time. The
+# libraries a plan needs must therefore be baked in here, once, by a human. That is the
+# deliberate split: the model writes code, the operator provisions the environment.
+FROM docker.io/library/python:3.12-slim
+
+RUN pip install --no-cache-dir \
+        pypdf \
+        pdfplumber \
+        PyMuPDF \
+        reportlab \
+        pytest

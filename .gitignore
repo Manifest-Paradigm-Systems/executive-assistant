@@ -37,6 +37,12 @@ venv/
 *.sqlite3
 out/
 
+# ---------------------------------------------------------------- backups
+# Hand-made .bak-* copies are a local safety net while patching a live service.
+# They are noise in a history that already has the real versions.
+*.bak-*
+*.bak
+
 # ---------------------------------------------------------------- editors / os
 .DS_Store
 *.swp

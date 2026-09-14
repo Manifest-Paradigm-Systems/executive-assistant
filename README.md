@@ -10,6 +10,9 @@ software on the owner's own hardware. Nothing leaves the house.
 | Path | What it is |
 |---|---|
 | `2-jarvis-database-and-devteam-plan.md` | **Start here.** The architecture review, gap analysis, design, and build plan for the memory database and the 3-brain devteam. |
+| `brain/` | The deployed source, as it runs on cerebro (`~/jarvis/brain/`): `db.py` (memory schema), `memory.py` (fact extractor), `devteam.py` (the team runner), `llm.py`, `editor.py`, `sandbox.py`, `brain.py`, and their tests. |
+| `sandbox/Containerfile.verify` | The image verify commands run inside. It is built locally because the sandbox runs `--network=none`: anything a verify imports must be baked in here. |
+| `systemd/` | The user units that run this: `jarvis-devteam.{service,timer}`, `jarvis-memory.{service,timer}`, `jarvis-brain`, `jarvis-board`. |
 | `1-creating_Jarvis_database.md` | Raw Gemini export (untracked — see below). |
 | `17-Expanding_Jarvis_capabilities_Google_Gemini.md` | The original expansion conversation that specifies the capabilities roadmap (untracked — see below). |
 
@@ -42,10 +45,19 @@ the reasoning behind it.
 
 ## Deployment state
 
-At the time of writing, the code on cerebro is **not yet deployed from this repository** —
-it was written directly on the host and is being brought under version control here. Until
-that is reconciled, this repository is a record rather than a source of truth. That
-reconciliation is tracked work, not an oversight.
+The source on cerebro was written directly on the host and is now mirrored here under
+`brain/`. The host is still the thing that runs; this repository is where a change is
+recorded, so it can be reviewed or reverted rather than lost. Keep the two in step — a
+change made on cerebro should land here in the same sitting.
+
+Verify commands do **not** run on the host. They run inside the image built from
+`sandbox/Containerfile.verify`, which is built once, by hand, because the sandbox runs
+with `--network=none` and nothing can be installed while a check runs:
+
+    podman build -t localhost/jarvis-verify:latest -f sandbox/Containerfile.verify sandbox/
+
+So adding a library a plan needs means adding it there and rebuilding — the team cannot
+install its own way out of a missing dependency.
 
 ## Working rules
 

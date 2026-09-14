@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Jarvis memory worker every few minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# If the box was off over a tick, run once on wake rather than skipping the window.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

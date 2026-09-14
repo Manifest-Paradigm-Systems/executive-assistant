@@ -1,0 +1,20 @@
+# jarvis-devteam — the offline team's heartbeat (cerebro, USER unit)
+#
+# Picks up whatever work is ready on any reviewed, approved plan and does it. Bounded
+# per tick so a frequent timer stays cheap; a file lock in devteam.py means a tick that
+# collides with a human-run workflow simply skips rather than interleaving two runs.
+#
+# The team stops for a human ONLY for the categories the owner named: erasing or
+# rewriting a container, and major LLM changes (quantization, context/KV cache).
+# Everything else it decides itself — see classify_major() in devteam.py.
+[Unit]
+Description=Jarvis offline dev team — work whatever is ready
+After=jarvis-brain.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/home/admin/jarvis/brain
+ExecStart=/usr/bin/python3 /var/home/admin/jarvis/brain/devteam.py autopilot --max-items 3
+# Below the live assistant: dev work must never make Jarvis feel slow.
+Nice=10
+TimeoutStartSec=1800

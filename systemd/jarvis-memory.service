@@ -1,0 +1,16 @@
+# jarvis-memory — raw turns -> curated facts + debate archive (cerebro, USER unit)
+#
+# Out-of-band by design: extraction must never sit on the reply path. Oneshot,
+# driven by jarvis-memory.timer. Reads and writes conversations.db; the live
+# brain is unaffected (WAL, separate process).
+[Unit]
+Description=Jarvis memory worker (turns -> facts + archive)
+After=jarvis-brain.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/home/admin/jarvis/brain
+ExecStart=/usr/bin/python3 /var/home/admin/jarvis/brain/memory.py --once --quiet
+# Below the live brain in scheduling priority — this is background tidying.
+Nice=10
+TimeoutStartSec=900

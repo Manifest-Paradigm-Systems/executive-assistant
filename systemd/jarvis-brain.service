@@ -1,0 +1,21 @@
+# jarvis-brain (cerebro, USER unit — needs linger, already enabled for admin)
+# The AG2 director/coder pair served as an OpenAI-compatible model, plus an
+# SSE event feed for the docks panel and the visualizer bus.
+[Unit]
+Description=Jarvis brain (AG2 director as an OpenAI model), port 8092
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/home/admin/jarvis/brain
+Environment=AG2_DIRECTOR_URL=http://127.0.0.1:8081
+Environment=AG2_CODER_URL=http://127.0.0.1:8082
+Environment=JARVIS_PERSONA_FILE=/var/home/admin/jarvis/brain/persona.txt
+EnvironmentFile=-/var/home/admin/jarvis/brain/brain.env
+ExecStart=/var/home/admin/ag2/.venv/bin/uvicorn brain:app --host 0.0.0.0 --port 8092
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

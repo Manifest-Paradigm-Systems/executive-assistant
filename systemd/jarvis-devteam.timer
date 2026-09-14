@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Jarvis dev team every few minutes
+
+[Timer]
+OnBootSec=5min
+# Six minutes: long enough that a 3-item tick has usually finished before the next one,
+# short enough that queued work does not sit idle for long. The lock makes an overlap
+# harmless either way.
+OnUnitActiveSec=6min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

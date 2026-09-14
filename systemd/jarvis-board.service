@@ -1,0 +1,19 @@
+# jarvis-board — a read-only view of what the dev team is working on (cerebro, USER unit)
+#
+# Deliberately a separate service from jarvis-docks: it opens the database read-only
+# and never writes, so it can be left open on a phone or a wall display without any
+# risk to the work in flight.
+[Unit]
+Description=Jarvis devteam board (read-only work view), port 8094
+After=jarvis-brain.service
+
+[Service]
+Type=simple
+WorkingDirectory=/var/home/admin/jarvis/board
+Environment=JARVIS_DB=/var/home/admin/jarvis/conversations.db
+ExecStart=/var/home/admin/jarvis/.venv/bin/uvicorn board:app --host 0.0.0.0 --port 8094
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
