@@ -442,6 +442,15 @@ def run():
     check("the item budget leaves room for more than one attempt",
           devteam.ITEM_BUDGET >= 300, devteam.ITEM_BUDGET)
 
+    print("\n-- every prompt that writes code is told what exists --")
+    # The review writes the canonical design, so it needs the same contract as the
+    # planner: it named pyhanko for the DOCS design without knowing whether it existed.
+    for name in ("DIRECTOR_PROMPT", "REVIEW_PROMPT", "CODER_PROMPT"):
+        text = getattr(devteam, name)
+        check(f"{name} names the available libraries", "pypdf" in text, name)
+    check("and the review is warned that nothing can be installed",
+          "NO NETWORK" in devteam.REVIEW_PROMPT)
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 

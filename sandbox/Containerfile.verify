@@ -3,6 +3,10 @@
 # Verifies run with --network=none, so nothing can be installed at check time. The
 # libraries a plan needs must therefore be baked in here, once, by a human. That is the
 # deliberate split: the model writes code, the operator provisions the environment.
+#
+# The lint only sees what a verify COMMAND imports, never what the finished module will
+# import — so anything a plan is likely to reach for belongs here before it is planned,
+# not after it has churned for an hour discovering it is missing.
 FROM docker.io/library/python:3.12-slim
 
 RUN pip install --no-cache-dir \
@@ -10,4 +14,5 @@ RUN pip install --no-cache-dir \
         pdfplumber \
         PyMuPDF \
         reportlab \
-        pytest
+        pytest \
+        pyhanko

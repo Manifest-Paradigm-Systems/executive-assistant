@@ -116,6 +116,7 @@ Break this into work items. HARD CONSTRAINTS:
        pdfplumber     text and geometry extraction, locating blank regions
        PyMuPDF        imported as `fitz` — rendering, overlaying onto an existing page
        reportlab      generating a PDF from scratch
+       pyhanko        PDF signing (incremental update, signature fields)
        pytest         only for verifies written as `python3 -m pytest <path> -q`
        Pillow         imaging
    Use these and no others. An item that imports anything outside this list cannot
@@ -213,6 +214,14 @@ together:
 - two items that both create or claim ownership of the same file
 - a later item that assumes an approach an earlier item rules out
 - an item that depends on something no item produces
+
+WHAT EXISTS — the design you write is implemented against this and nothing else. The
+sandbox that runs every verify has NO NETWORK, so a design naming a library outside this
+list produces items that can never pass:
+    the Python 3.12 standard library, plus pypdf, pdfplumber, PyMuPDF (`import pymupdf`),
+    reportlab, Pillow, pyhanko, pytest.
+If an item needs something not in that list, say so as a consistency problem rather than
+writing the design around it.
 
 Report ONLY real problems. Do not invent issues. Do not comment on wording or style.
 If the plan is sound, say so — a false alarm wastes more time than it saves.
