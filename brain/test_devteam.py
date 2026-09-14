@@ -451,6 +451,26 @@ def run():
     check("and the review is warned that nothing can be installed",
           "NO NETWORK" in devteam.REVIEW_PROMPT)
 
+    print("\n-- the review must not report finished work as a contradiction --")
+    def fake(iid, status, detail="d", verify="v", deps="", title="t"):
+        return {"id": iid, "status": status, "detail": detail, "verify": verify,
+                "depends_on": deps, "title": title}
+
+    text = devteam._review_listing([fake("P:1", "verified"), fake("P:2", "pending")])
+    fence = text.index("ALREADY IMPLEMENTED AND VERIFIED")
+    check("verified items are fenced off after the fence",
+          text.index("P:1") > fence, "P:1 should only appear past the fence")
+    check("outstanding items are before it",
+          text.index("P:2") < fence, "P:2 is in scope")
+    check("and the fence says not to report them",
+          "NOT in scope" in text and "Do NOT" in text)
+
+    only_todo = devteam._review_listing([fake("P:2", "pending")])
+    check("with nothing verified there is no fence at all",
+          "ALREADY IMPLEMENTED" not in only_todo)
+    check("both statuses of done are treated as done",
+          "ALREADY IMPLEMENTED" in devteam._review_listing([fake("P:3", "complete")]))
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 

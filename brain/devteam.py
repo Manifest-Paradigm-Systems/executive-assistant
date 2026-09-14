@@ -841,6 +841,41 @@ def _apply_respecs(conn, plan_id: str, issues: list, log) -> tuple[int, str]:
     return applied, ""
 
 
+def _review_listing(items) -> str:
+    """The plan as the reviewer sees it.
+
+    Verified items are shown but fenced off. Two items that both edited the same file
+    and both SUCCEEDED are history, not a contradiction — but the reviewer cannot tell,
+    so it reports one, sets the plan inconsistent, and the coder then refuses to start
+    the remaining work on a plan that is nearly finished. That happened to VISUAL2 on
+    2026-09-14, over JV-002 and JV-003, which had both been verified for hours.
+
+    They are still listed, because the design contract has to match what is really on
+    disk. They are just not in scope for finding contradictions.
+    """
+    done_statuses = ("verified", "complete")
+
+    def block(rows):
+        return "\n\n".join(
+            f"{i['id']} — {i['title']}\n"
+            f"  detail: {(i['detail'] or '').strip()[:1200]}\n"
+            f"  verify: {i['verify']}\n"
+            f"  depends_on: {i['depends_on'] or 'none'}"
+            for i in rows)
+
+    outstanding = [i for i in items if i["status"] not in done_statuses]
+    done = [i for i in items if i["status"] in done_statuses]
+
+    text = block(outstanding)
+    if done:
+        text += ("\n\nALREADY IMPLEMENTED AND VERIFIED — DONE, and NOT in scope for this "
+                 "review. Their files and interfaces already exist and are fixed. Do NOT "
+                 "report a contradiction between two of these, and do not propose changing "
+                 "them. They are listed only so that the design contract matches what is "
+                 "really on disk:\n" + block(done))
+    return text
+
+
 def do_review(plan_id: str, fix: bool = False, rounds: int = 3, log=print) -> bool:
     """The architect sanity-checks its own plan before any code is written.
 
@@ -872,16 +907,12 @@ def do_review(plan_id: str, fix: bool = False, rounds: int = 3, log=print) -> bo
             "inconsistent rather than guessing again")
         return False
 
-    listing = "\n\n".join(
-        f"{i['id']} — {i['title']}\n"
-        f"  detail: {(i['detail'] or '').strip()[:1200]}\n"
-        f"  verify: {i['verify']}\n"
-        f"  depends_on: {i['depends_on'] or 'none'}"
-        for i in items)
+    listing = _review_listing(items)
 
     prompt = REVIEW_PROMPT.format(plan=listing)
     log(f"  architect is checking {len(items)} items for consistency…")
-    reply, ms = llm.timed_chat("director", prompt, max_tokens=3000, temperature=0.2)
+    reply, ms = llm.timed_chat("director", prompt, max_tokens=DIRECTOR_TOKENS,
+                               temperature=0.2)
     jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
                       ms=ms, plan_id=plan_id, engine=":8081")
 
