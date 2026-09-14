@@ -121,3 +121,62 @@ def extract_json(text: str) -> dict | None:
                         break
         start = text.find("{", start + 1)
     return None
+
+
+# ------------------------------------------------------------------ the cloud lane
+# The local lanes are the team. This one exists for the rare call a 32B cannot be
+# trusted with and cannot be argued out of: deciding whether a review rejection is real,
+# where a false "no" stops a plan and a false "yes" ships a contradiction.
+#
+# Volume is tiny — one call per rejection — and the price is nothing. Measured
+# 2026-09-14: a test call cost $0.0000009; a full adjudication a fraction of a cent.
+#
+# The key is read from the same 0600 env file the rest of the brain uses, because the
+# systemd unit does not export it and a developer running devteam.py by hand should get
+# the same behaviour as the timer.
+CLOUD_URL = os.getenv("JARVIS_CLOUD_URL", "https://openrouter.ai/api/v1")
+CLOUD_MODEL = os.getenv("JARVIS_CLOUD_MODEL", "deepseek/deepseek-v4-flash")
+_ENV_FILE = os.getenv("JARVIS_ENV_FILE",
+                      os.path.expanduser("~/jarvis/brain/brain.env"))
+
+
+def _key_from_env_file(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("OPENROUTER_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+CLOUD_KEY = (os.getenv("JARVIS_CLOUD_KEY") or os.getenv("OPENROUTER_API_KEY")
+             or _key_from_env_file(_ENV_FILE))
+
+
+def cloud_available() -> bool:
+    return bool(CLOUD_KEY)
+
+
+def cloud_chat(prompt: str, *, max_tokens: int = 2500, timeout: int = 180) -> str:
+    """One completion from the frontier model.
+
+    Raises on transport or auth failure rather than returning something empty: the
+    caller has to decide whether that means "fall back to the local verdict" or "stop",
+    and a revoked key must not present itself as a silent downgrade.
+    """
+    if not CLOUD_KEY:
+        raise RuntimeError("no cloud key: set OPENROUTER_API_KEY or JARVIS_CLOUD_KEY")
+    payload = json.dumps({"model": CLOUD_MODEL,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "max_tokens": max_tokens, "temperature": 0}).encode()
+    req = urllib.request.Request(f"{CLOUD_URL}/chat/completions", data=payload,
+                                 headers={"Authorization": f"Bearer {CLOUD_KEY}",
+                                          "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = json.loads(r.read())
+    if "error" in body:
+        raise RuntimeError(f"cloud error: {str(body['error'])[:200]}")
+    return strip_think(body["choices"][0]["message"].get("content") or "").strip()

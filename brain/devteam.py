@@ -47,6 +47,7 @@ import tempfile
 import traceback
 import time
 
+import contradictions
 import db as jarvis_db
 import diagnose
 import editor
@@ -880,6 +881,66 @@ def _apply_respecs(conn, plan_id: str, issues: list, log) -> tuple[int, str]:
     return applied, ""
 
 
+def _review_sample(conn, plan_id: str, prompt: str) -> dict:
+    """One review sample from the director lane, logged like any other call."""
+    reply, ms = llm.timed_chat("director", prompt, max_tokens=DIRECTOR_TOKENS,
+                               temperature=0.2)
+    jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
+                      ms=ms, plan_id=plan_id, engine=":8081")
+    data = llm.extract_json(reply)
+    if data is None:
+        raise SystemExit(f"architect returned no usable review.\n--- raw ---\n{reply[:2000]}")
+    return data
+
+
+def _same_subject(first, second) -> bool:
+    """Do two rejections name the same items? Noise rarely repeats itself."""
+    def ids(issues):
+        out = set()
+        for issue in issues or []:
+            if isinstance(issue, dict):
+                out |= {str(x) for x in (issue.get("items") or [])}
+        return out
+    one, two = ids(first), ids(second)
+    return bool(one and two and (one & two))
+
+
+def _adjudicate(items, issues, log) -> bool:
+    """Is the rejection real? True means "treat the plan as consistent".
+
+    Falls back to believing the LOCAL reviewer when the cloud is unreachable: a failed
+    escalation must not quietly pass a plan, and an unavailable adjudicator is not
+    evidence that the contradiction is imaginary.
+    """
+    if not llm.cloud_available():
+        log("    no cloud key — taking the local rejection at face value")
+        return False
+    block = "\n\n".join(
+        f"{i['id']} [{i['status']}]: {i['title']}\n  detail: {(i['detail'] or '')[:700]}\n"
+        f"  verify: {i['verify']}" for i in items)
+    prompt = ADJUDICATE_PROMPT.format(
+        plan=block, issues=json.dumps(issues, indent=1)[:3000])
+    try:
+        reply = llm.cloud_chat(prompt)
+    except Exception as exc:  # noqa: BLE001
+        log(f"    adjudicator unavailable ({type(exc).__name__}: {exc}) — taking the "
+            f"local rejection at face value")
+        return False
+    data = llm.extract_json(reply) or {}
+    verdict = str(data.get("verdict") or "").strip().lower()
+    if verdict == "not_real":
+        log(f"    the adjudicator says NOT REAL — overruling the rejection: "
+            f"{str(data.get('reason'))[:160]}")
+        return True
+    if verdict == "mixed":
+        real = data.get("real_ones") or []
+        log(f"    the adjudicator says MIXED ({len(real)} real) — keeping the rejection: "
+            f"{str(data.get('reason'))[:160]}")
+        return False
+    log(f"    the adjudicator CONFIRMS the rejection: {str(data.get('reason'))[:160]}")
+    return False
+
+
 def _review_listing(items) -> str:
     """The plan as the reviewer sees it.
 
@@ -913,6 +974,41 @@ def _review_listing(items) -> str:
                  "them. They are listed only so that the design contract matches what is "
                  "really on disk:\n" + block(done))
     return text
+
+
+ADJUDICATE_PROMPT = """You are adjudicating a disputed plan review.
+
+A local 32B reviewer read a set of work items and reported them INCONSISTENT. Its findings
+are below. That reviewer is often wrong in specific ways: it miscounts arguments, reports
+two already-VERIFIED items as conflicting, invents imports that are not there, and has
+paired an item with itself. It is also sometimes right, and a wrong "consistent" here
+ships a contradiction into working code.
+
+For each finding decide whether it is REAL — two items that cannot both be true at once.
+
+What is NOT a contradiction:
+  - two items editing the same file in sequence
+  - items that are already verified; their history cannot conflict with future work
+  - a count that does not actually mismatch when you count it yourself
+  - anything you cannot point at in the item text below
+
+What IS:
+  - two unfinished items both claiming to CREATE the same file
+  - a signature in a specification that disagrees with how the verify calls it
+  - one item importing a name another item's specification never defines
+  - a verify that reads an artifact no item produces
+
+THE ITEMS:
+{plan}
+
+THE FINDINGS TO ADJUDICATE:
+{issues}
+
+Reply with ONE JSON object and no markdown fence:
+{{"verdict": "real" or "not_real" or "mixed",
+  "real_ones": [<1-based numbers of the findings that are real>],
+  "reason": "<one sentence>"}}
+"""
 
 
 def do_review(plan_id: str, fix: bool = False, rounds: int = 3, log=print) -> bool:
@@ -950,18 +1046,40 @@ def do_review(plan_id: str, fix: bool = False, rounds: int = 3, log=print) -> bo
 
     prompt = REVIEW_PROMPT.format(plan=listing)
     log(f"  architect is checking {len(items)} items for consistency…")
-    reply, ms = llm.timed_chat("director", prompt, max_tokens=DIRECTOR_TOKENS,
-                               temperature=0.2)
-    jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
-                      ms=ms, plan_id=plan_id, engine=":8081")
 
-    data = llm.extract_json(reply)
-    if not data:
-        raise SystemExit(f"architect returned no usable review.\n--- raw ---\n{reply[:2000]}")
+    # Countable contradictions are counted here, where the answer is the same on every
+    # run, instead of being left for a model to derive. The reviewer is told the result.
+    mechanical = contradictions.check_plan(items)
+    for finding in mechanical:
+        log(f"    MECHANICAL {finding}")
 
+    data = _review_sample(conn, plan_id, prompt)
     design = (data.get("design") or "").strip()
     issues = [i for i in (data.get("issues") or []) if isinstance(i, dict)]
     consistent = bool(data.get("consistent"))
+
+    if mechanical:
+        consistent = False
+        issues = issues + [{"items": f.items, "problem": f.problem, "fix": f.fix}
+                           for f in mechanical]
+
+    # A rejection stops the plan until somebody re-runs the review by hand, and this
+    # reviewer rejects correct work about one time in three. So a rejection has to be
+    # corroborated: a second sample that names the same items, then a frontier model to
+    # say whether it is real. A mechanical finding needs none of that — it is a fact.
+    if not consistent and not mechanical:
+        log("  the reviewer rejected it — taking a second sample before believing it")
+        again = _review_sample(conn, plan_id, prompt)
+        if again.get("consistent"):
+            log("  the second sample disagrees — treating the rejection as noise")
+            consistent, issues = True, []
+        elif not _same_subject(issues, again.get("issues") or []):
+            log("  the two rejections do not name the same items — treating it as noise")
+            consistent, issues = True, []
+        else:
+            log("  both samples reject the same items — asking the adjudicator")
+            if _adjudicate(items, issues, log):
+                consistent, issues = True, []
 
     # A review that produces no design contract has not done the work, whatever it
     # claims about consistency — there would be nothing for the items to agree on.

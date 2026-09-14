@@ -600,6 +600,25 @@ def run():
           devteam.verify_runs_unrelated_file(
               'python3 -m pytest', "Modify `documents/fill.py`.") is None)
 
+    print("\n-- a rejection needs corroboration --")
+    check("two rejections naming the same item corroborate",
+          devteam._same_subject([{"items": ["P:1", "P:2"]}], [{"items": ["P:2"]}]) is True)
+    check("two rejections naming different items do not",
+          devteam._same_subject([{"items": ["P:1"]}], [{"items": ["P:9"]}]) is False)
+    check("an empty or malformed rejection never corroborates",
+          devteam._same_subject([], [{"items": ["P:1"]}]) is False
+          and devteam._same_subject([{"items": []}], [{"items": ["P:1"]}]) is False
+          and devteam._same_subject([{"items": ["P:1"]}], [None]) is False)
+
+    saved_cloud = devteam.llm.cloud_available
+    devteam.llm.cloud_available = lambda: False
+    try:
+        # No adjudicator must mean "believe the local rejection", never "pass anyway".
+        check("with no cloud key the rejection stands",
+              devteam._adjudicate([], [{"items": ["P:1"]}], lambda *a: None) is False)
+    finally:
+        devteam.llm.cloud_available = saved_cloud
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 
