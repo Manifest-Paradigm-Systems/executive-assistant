@@ -117,6 +117,7 @@ Break this into work items. HARD CONSTRAINTS:
        PyMuPDF        imported as `fitz` — rendering, overlaying onto an existing page
        reportlab      generating a PDF from scratch
        pyhanko        PDF signing (incremental update, signature fields)
+       click          command-line interfaces (and its CliRunner test helper)
        pytest         only for verifies written as `python3 -m pytest <path> -q`
        Pillow         imaging
    Use these and no others. An item that imports anything outside this list cannot
@@ -170,7 +171,8 @@ RULES — these are hard:
 3. Prefer creating a NEW file over editing an existing one.
 4. Dependencies are FIXED. The sandbox that runs your verify has no network, so use
    only the standard library plus these: pypdf, pdfplumber, PyMuPDF (`import fitz`),
-   reportlab, Pillow, pytest. Import anything else and the item cannot pass.
+   reportlab, Pillow, pyhanko, click, pytest. Import anything else and the item cannot
+   pass — there is no network, and no requirements file can change that.
 5. Keep it small enough to be correct. A working 40-line file beats a broken 400-line one.
 6. Match the interface in the item specification exactly — other items depend on it.
 
@@ -219,7 +221,7 @@ WHAT EXISTS — the design you write is implemented against this and nothing els
 sandbox that runs every verify has NO NETWORK, so a design naming a library outside this
 list produces items that can never pass:
     the Python 3.12 standard library, plus pypdf, pdfplumber, PyMuPDF (`import pymupdf`),
-    reportlab, Pillow, pyhanko, pytest.
+    reportlab, Pillow, pyhanko, click, pytest.
 If an item needs something not in that list, say so as a consistency problem rather than
 writing the design around it.
 
@@ -278,9 +280,18 @@ files it may edit, and code that matches paths against a specification cannot ma
 specification that names none. A path-free respec has already cost this team hours.
 
 A NOTE ON WHAT CAN BE EXECUTED: the coder writes files and nothing else — only the
-VERIFY command runs. Do not respec an item into "write a script and run it", because
-nothing will ever run it. If an artifact must exist before the check, the verify
-command has to produce it as part of the check.
+VERIFY command runs, and it runs with NO NETWORK. So:
+
+- Do not respec an item into "write a script and run it" — nothing will ever run it.
+  If an artifact must exist before the check, the verify must produce it as part of the
+  check.
+- Do NOT respec an item into "add X to requirements.txt" or "install X". A requirements
+  file installs nothing, and nothing can be installed at check time. This has been tried
+  and it burned three attempts on an item that could not possibly pass.
+
+If a library is genuinely absent, say so plainly in `reason`, name the library, and
+leave `verdict` as "abandon" with no respec: an operator has to add it to the sandbox
+image, and that is a decision for a human, not a work item.
 
 ALWAYS OFFER OPTIONS. This is a standing instruction from the owner. Never present a single
 way forward when there is a real choice: give the human 2 to 4 genuinely different ways to

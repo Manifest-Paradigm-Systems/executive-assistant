@@ -452,6 +452,12 @@ def run():
     for name in ("DIRECTOR_PROMPT", "REVIEW_PROMPT", "CODER_PROMPT"):
         text = getattr(devteam, name)
         check(f"{name} names the available libraries", "pypdf" in text, name)
+        # click is a real dependency of the CLI the plan designed; when it was missing
+        # the repair path proposed editing requirements.txt, which installs nothing.
+        check(f"{name} names click", "click" in text, name)
+    check("the repair prompt refuses requirements-file respecs",
+          "requirements" in devteam.REPAIR_PROMPT
+          and "installs nothing" in devteam.REPAIR_PROMPT)
     check("and the review is warned that nothing can be installed",
           "NO NETWORK" in devteam.REVIEW_PROMPT)
 

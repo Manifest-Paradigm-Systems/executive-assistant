@@ -15,4 +15,5 @@ RUN pip install --no-cache-dir \
         PyMuPDF \
         reportlab \
         pytest \
-        pyhanko
+        pyhanko \
+        click
