@@ -475,6 +475,39 @@ def run():
     check("both statuses of done are treated as done",
           "ALREADY IMPLEMENTED" in devteam._review_listing([fake("P:3", "complete")]))
 
+    print("\n-- a file only this item names is its own to rewrite --")
+    victim = os.path.join(ws, "owned_by_one.py")
+    with open(victim, "w") as fh:
+        fh.write("def helper():\n    return 1\n\ndef other():\n    return 2\n")
+    # Without ownership the guard blocks a rewrite that drops a name — correct for a
+    # shared file, wrong for the item's own deliverable.
+    check("an unowned rewrite that drops a name is still refused",
+          devteam.check_no_clobber(victim, "def helper():\n    return 9\n") is not None)
+    check("an owned rewrite is allowed",
+          devteam.check_no_clobber(victim, "def helper():\n    return 9\n",
+                                   owned=True) is None)
+
+    saved_path5, saved_db5 = jdb.DB_PATH, devteam.jarvis_db.DB_PATH
+    jdb.DB_PATH = devteam.jarvis_db.DB_PATH = os.path.join(tempfile.mkdtemp(), "own.db")
+    try:
+        conn = jdb.open_db()
+        mine = {"id": "O-1", "plan_id": "P", "detail": "Create pkg/only_mine.py please"}
+        theirs = {"id": "O-2", "plan_id": "P", "detail": "Create pkg/shared.py here"}
+        shared = {"id": "O-3", "plan_id": "P", "detail": "Also touch pkg/shared.py"}
+        for it in (mine, theirs, shared):
+            jdb.add_item(conn, {"id": it["id"], "plan_id": "P", "title": "t",
+                                "detail": it["detail"], "verify": "v", "workspace": ws,
+                                "ordinal": 1, "status": "pending", "owner": "coder"})
+        check("a file only this item names is owned",
+              devteam.sole_owner(conn, mine, "pkg/only_mine.py") is True)
+        # The guard's whole reason for existing: two items naming one file.
+        check("a file two items name is NOT owned",
+              devteam.sole_owner(conn, shared, "pkg/shared.py") is False)
+        check("and a file this item never mentions is not owned",
+              devteam.sole_owner(conn, mine, "pkg/shared.py") is False)
+    finally:
+        jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path5
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 

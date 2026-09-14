@@ -384,8 +384,11 @@ def _public_names(source: str) -> set[str]:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
 
 
-def check_no_clobber(full_path: str, new_source: str) -> str | None:
+def check_no_clobber(full_path: str, new_source: str, owned: bool = False) -> str | None:
     """Would writing this remove something the file already provides?
+
+    `owned` says the writing item is the only one in its plan that names this file, so
+    the file is its deliverable and a rewrite is the item doing its job.
 
     This is the fix for the failure that cost us four verified items. Two work items can
     name the same file — and when the second writes the whole file, it silently deletes
@@ -398,6 +401,8 @@ def check_no_clobber(full_path: str, new_source: str) -> str | None:
     would be lost is deterministic, and it turns a silent deletion into a repair the
     director can actually act on.
     """
+    if owned:
+        return None
     try:
         with open(full_path, encoding="utf-8", errors="replace") as fh:
             had = _public_names(fh.read())
@@ -414,9 +419,10 @@ def check_no_clobber(full_path: str, new_source: str) -> str | None:
     return None
 
 
-def apply_files(workspace: str, files: list, log) -> list[str]:
+def apply_files(workspace: str, files: list, log, owned=None) -> list[str]:
     """Write the coder's files. Backs up anything it overwrites, and refuses a write
-    that would delete another item's work."""
+    that would delete another item's work — except for files the writing item alone
+    names, which are its own deliverable."""
     written = []
     for entry in files or []:
         if not isinstance(entry, dict):
@@ -430,7 +436,7 @@ def apply_files(workspace: str, files: list, log) -> list[str]:
             log.append(f"REFUSED path outside workspace: {rel}")
             continue
         if os.path.exists(full):
-            clobber = check_no_clobber(full, content)
+            clobber = check_no_clobber(full, content, owned=rel in (owned or ()))
             if clobber:
                 log.append(f"REFUSED {rel}: {clobber}")
                 continue
@@ -1027,6 +1033,28 @@ def named_paths(text: str) -> set:
             re.finditer(r"[A-Za-z_][\w./-]*\.(?:py|pdf|txt|json|md)\b", text or "")}
 
 
+def sole_owner(conn, item, rel_path: str) -> bool:
+    """Does this item alone name this file among its plan's items?
+
+    The clobber guard protects against two items naming one file, where the second
+    write silently deletes the first's work. That is a real failure and it keeps its
+    protection. But a file only this item names is this item's own deliverable, and
+    refusing to let it rewrite that file stops it repairing its own work — which is
+    what VISUAL2:JV-006 hit: it could not rewrite the test file it had just created.
+    """
+    if not item["plan_id"]:
+        return False
+    rel = (rel_path or "").replace("\\", "/")
+    if rel not in named_paths(item["detail"] or ""):
+        return False
+    for other in jarvis_db.list_items(conn, item["plan_id"]):
+        if other["id"] == item["id"]:
+            continue
+        if rel in named_paths(other["detail"] or ""):
+            return False
+    return True
+
+
 def wrote_named_file(named, changed) -> bool:
     """Did the run touch a file the specification actually names?
 
@@ -1121,7 +1149,9 @@ def _builtin_attempt(conn, item, design: str, workspace: str, last_error: str, l
         return "reply was not parseable JSON", None
 
     aplog: list[str] = []
-    apply_files(workspace, data.get("files") or [], aplog)
+    owned = {p for p in named_paths(item["detail"] or "")
+             if sole_owner(conn, item, p)}
+    apply_files(workspace, data.get("files") or [], aplog, owned=owned)
     apply_diffs(workspace, data.get("diffs") or [], aplog)
     for line in aplog:
         log(f"    {line}")
