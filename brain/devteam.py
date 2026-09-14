@@ -1626,6 +1626,23 @@ Report ONLY the commands that could pass without the work, and give a stronger c
 that fails when the work is missing. Do not invent problems to seem useful — if a command
 genuinely proves the behaviour it claims, say so and move on.
 
+YOUR REPLACEMENT MUST BE PASSABLE BY CORRECT WORK. A check that fails on a correct
+implementation is worse than the weak one it replaces: the item can then never verify,
+and everything behind it is blocked. Three ways this goes wrong, all of which have
+happened on this project:
+
+- Do NOT search raw PDF bytes for a string. PDF content is usually compressed, so text
+  a library just wrote is not literally present in the file and the check fails on
+  correct work. Assert on the value the item's own function RETURNS, or re-open the
+  output with the library that wrote it (pypdf / fitz / pdfplumber) and read it through
+  that library.
+- Do NOT assert on a name you were not given. If the specification does not state a
+  field name, an option name or a key, you do not know it and must not invent one.
+- Every path a command READS must already exist or be created by another item in this
+  plan. Nothing in this sandbox can be downloaded or generated out of thin air. If the
+  fixture a command needs is created by no item, say that plainly in `why` and leave
+  `stronger_verify` empty — the plan needs a new item, not a cleverer assertion.
+
 THE PLAN:
 {plan}
 
