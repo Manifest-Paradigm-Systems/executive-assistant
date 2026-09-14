@@ -230,7 +230,7 @@ def run():
         check("CODER_PROMPT formats", False, f"unescaped brace: {exc}")
     try:
         devteam.REPAIR_PROMPT.format(attempts=3, item_id="i", title="t", detail="d",
-                                     error="e", listing="l")
+                                     error="e", history="h", listing="l")
         check("REPAIR_PROMPT formats", True)
     except (KeyError, IndexError) as exc:
         check("REPAIR_PROMPT formats", False, f"unescaped brace: {exc}")
@@ -362,6 +362,31 @@ def run():
               devteam._module_available("definitely_absent_pkg") is False)
     finally:
         jdb.DB_PATH = devteam.jarvis_db.DB_PATH = saved_path3
+
+    print("\n-- executor diversity (a second attempt, spent differently) --")
+    saved_exec, saved_avail = devteam.EXECUTOR, devteam.editor.available
+    try:
+        devteam.EXECUTOR = "auto"
+        devteam.editor.available = lambda: True
+        check("the first attempt uses the primary executor",
+              devteam.executor_for_attempt(1) is True)
+        check("and the second switches", devteam.executor_for_attempt(2) is False)
+        check("staying switched thereafter", devteam.executor_for_attempt(3) is False)
+        devteam.EXECUTOR = "aider"
+        check("a pinned executor is not second-guessed",
+              devteam.executor_for_attempt(2) is True)
+        devteam.EXECUTOR = "auto"
+        devteam.editor.available = lambda: False
+        check("with no editor there is only one path",
+              devteam.executor_for_attempt(2) is False)
+    finally:
+        devteam.EXECUTOR, devteam.editor.available = saved_exec, saved_avail
+
+    print("\n-- output budget reaches the model, not just the constant --")
+    check("the plan budget is above a whole plan, not below it",
+          devteam.DIRECTOR_TOKENS >= 8000, devteam.DIRECTOR_TOKENS)
+    check("and the repair budget is not a one-liner cap",
+          devteam.REPAIR_TOKENS >= 4000, devteam.REPAIR_TOKENS)
 
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)

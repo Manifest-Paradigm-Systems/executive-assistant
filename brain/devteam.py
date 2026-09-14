@@ -53,6 +53,13 @@ import llm
 import sandbox
 
 MAX_ATTEMPTS = int(os.getenv("DEVTEAM_MAX_ATTEMPTS", "3"))
+
+# Output budget, not context. R1 serves 128k of context across 2 parallel slots and
+# strips its own <think> before this code sees it — the plan is a structured artifact,
+# and a cap that truncates one mid-JSON throws the entire generation away, so set it
+# comfortably ABOVE what a full plan needs rather than just above the average.
+DIRECTOR_TOKENS = int(os.getenv("DEVTEAM_DIRECTOR_TOKENS", "12000"))
+REPAIR_TOKENS = int(os.getenv("DEVTEAM_REPAIR_TOKENS", "8000"))
 VERIFY_TIMEOUT = int(os.getenv("DEVTEAM_VERIFY_TIMEOUT", "300"))
 FILE_LIST_LIMIT = 120
 INLINE_FILE_LIMIT = 6000          # bytes of an existing file worth showing the coder
@@ -227,6 +234,9 @@ SPECIFICATION:
 
 THE ERROR, from running the verify command:
 {error}
+
+EVERY ATTEMPT SO FAR, oldest first. Do not propose an approach that has already failed:
+{history}
 
 FILES PRESENT IN THE WORKSPACE (the plan may disagree with reality — check carefully,
 especially for a name that exists BOTH as a module `x.py` and a package `x/`; the package
@@ -705,7 +715,8 @@ def do_plan(brief: str, workspace: str, plan_id: str, title_hint: str | None = N
     conn = jarvis_db.open_db()
     prompt = DIRECTOR_PROMPT.format(brief=brief, workspace=_root(workspace),
                                    listing=list_files(workspace))
-    reply, ms = llm.timed_chat("director", prompt, max_tokens=3000, temperature=0.4)
+    reply, ms = llm.timed_chat("director", prompt, max_tokens=DIRECTOR_TOKENS,
+                               temperature=0.4)
     jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
                       ms=ms, plan_id=plan_id, engine=":8081")
 
@@ -989,6 +1000,7 @@ def run_item(conn, item, log=print) -> str:
 
     attempts = 0
     last_error = ""
+    history: list[str] = []
 
     # A verify that cannot fail is a planning defect. Handing it to the coder
     # would burn three attempts proving nothing, so go straight to the director.
@@ -1001,13 +1013,16 @@ def run_item(conn, item, log=print) -> str:
 
     while attempts < MAX_ATTEMPTS:
         attempts += 1
-        log(f"  attempt {attempts}/{MAX_ATTEMPTS}")
-        if use_editor():
+        via_editor = executor_for_attempt(attempts)
+        log(f"  attempt {attempts}/{MAX_ATTEMPTS} via {'editor' if via_editor else 'coder lane'}")
+        if via_editor:
             err, suggested = _editor_attempt(conn, item, design, workspace, last_error, log)
         else:
             err, suggested = _builtin_attempt(conn, item, design, workspace, last_error, log)
         if err:
             last_error = err
+            history.append(f"attempt {attempts} ({'editor' if via_editor else 'coder lane'})"
+                           f" made no usable change: {err[:600]}")
             log(f"    attempt failed: {err[:160]}")
             continue
 
@@ -1021,6 +1036,8 @@ def run_item(conn, item, log=print) -> str:
             log(f"  -> {item_id} verified")
             return "verified"
         last_error = evidence
+        history.append(f"attempt {attempts} ({'editor' if via_editor else 'coder lane'}) "
+                       f"changed files but the verify still failed:\n{evidence[:800]}")
 
         # Some broken commands only reveal themselves once the module they import
         # actually exists — `print(f('file'))` is valid Python right up until `f`
@@ -1035,9 +1052,11 @@ def run_item(conn, item, log=print) -> str:
     repair_prompt = REPAIR_PROMPT.format(attempts=attempts + 1, item_id=item_id,
                                          title=item["title"], detail=item["detail"] or "",
                                          error=last_error[-2000:],
+                                         history="\n\n".join(history) or "(none recorded)",
                                          listing=list_files(workspace))
     try:
-        rreply, rms = llm.timed_chat("director", repair_prompt, max_tokens=1500, temperature=0.3)
+        rreply, rms = llm.timed_chat("director", repair_prompt, max_tokens=REPAIR_TOKENS,
+                                     temperature=0.3)
         jarvis_db.log_run(conn, role="director", prompt=repair_prompt, output=rreply, ok=True,
                           ms=rms, plan_id=item["plan_id"], item_id=item_id, engine=":8081")
         rdata = llm.extract_json(rreply) or {}
@@ -1190,6 +1209,23 @@ def use_editor() -> bool:
     if EXECUTOR == "aider":
         return True
     return editor.available()
+
+
+def executor_for_attempt(attempt: int) -> bool:
+    """Should THIS attempt go through the editor container?
+
+    The two executors fail differently: the editor path breaks on edit-format drift and
+    the builtin path on whole-file JSON. Retrying the same one three times spends all
+    three attempts inside a single failure mode, so under "auto" the second attempt
+    switches. An operator who pinned DEVTEAM_EXECUTOR gets exactly what they pinned.
+    """
+    if EXECUTOR == "builtin":
+        return False
+    if EXECUTOR == "aider":
+        return True
+    if not editor.available():
+        return False          # only one path exists on this machine
+    return attempt == 1
 
 
 def classify_major(text: str) -> tuple[bool, str]:
@@ -1354,9 +1390,10 @@ def do_options(item_id: str, log=print) -> None:
     prompt = REPAIR_PROMPT.format(
         attempts=0, item_id=item_id, title=row["title"], detail=row["detail"] or "",
         error=(row["evidence"] or "this item has not been attempted yet")[-2000:],
+        history=(row["notes"] or "(nothing recorded)")[:1500],
         listing=list_files(workspace))
     log(f"  asking the architect about {item_id}…")
-    reply, ms = llm.timed_chat("director", prompt, max_tokens=2200, temperature=0.4)
+    reply, ms = llm.timed_chat("director", prompt, max_tokens=REPAIR_TOKENS, temperature=0.4)
     jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
                       ms=ms, plan_id=row["plan_id"], item_id=item_id, engine=":8081")
 
@@ -1562,6 +1599,174 @@ def do_status(plan_id: str | None) -> None:
                 print(f"       └─ {i['evidence'].strip().splitlines()[-1][:110]}")
 
 
+FALSIFY_PROMPT = """You are the DIRECTOR, and this pass is adversarial: try to BREAK this plan's verify commands.
+
+A verify command is the only thing that decides an item is finished. A weak one is worse
+than no check at all, because the item is then marked `verified` while the work is still
+missing — and everything built on top of it inherits the gap.
+
+For EACH item ask: could this command exit 0 WITHOUT the work having been done? Ways that
+happens:
+
+- it only imports, prints, or lists a file, proving nothing about behaviour
+- it asserts a name exists, so any stub passes
+- it reads no output and writes no fixture: a no-op function satisfies it
+- it tests something the standard library provides rather than the item's own code
+- it would already exit 0 on the workspace as it stands, before the item is written
+
+Report ONLY the commands that could pass without the work, and give a stronger command
+that fails when the work is missing. Do not invent problems to seem useful — if a command
+genuinely proves the behaviour it claims, say so and move on.
+
+THE PLAN:
+{plan}
+
+Reply with ONE JSON object and no markdown fence:
+{{
+  "findings": [
+    {{"id": "<item id>",
+      "why": "<how this command could pass with the work missing>",
+      "stronger_verify": "<a replacement command that FAILS when the work is missing>"}}
+  ],
+  "sound": ["<ids whose verify is genuinely able to fail>"]
+}}"""
+
+
+TRIAGE_PROMPT = """You are the DIRECTOR reading your own team's board.
+
+Below is the state of the work and the recent failed calls. Say what is actually wrong and
+what should be done about it. Be concrete and brief — an operator reads this to decide
+whether to intervene.
+
+Prefer a diagnosis over a description: "DOCS:JV-001 cannot pass because the fixture it
+reads is created by no item, so it should be re-specced to build its own" beats
+"DOCS:JV-001 is in progress". If the board is healthy, say so plainly.
+
+THE BOARD:
+{board}
+
+RECENT FAILED RUNS (most recent first):
+{runs}
+
+Reply with ONE JSON object and no markdown fence:
+{{"summary": "<two sentences: what is stuck, and why>",
+  "healthy": true or false,
+  "actions": [
+    {{"kind": "respec" or "block" or "none",
+      "id": "<item id>",
+      "why": "<one sentence>",
+      "detail": "<if respec: the corrected FULL specification; else empty>",
+      "verify": "<if respec: the corrected verify command; else empty>"}}
+  ]}}"""
+
+
+def _board_text(conn, plan_id=None, limit=5) -> str:
+    plans = ([jarvis_db.get_plan(conn, plan_id)] if plan_id
+             else list(conn.execute("SELECT * FROM plans ORDER BY created DESC LIMIT ?",
+                                    (limit,))))
+    lines = []
+    for p in plans:
+        if p is None:
+            continue
+        lines.append(f"PLAN {p['id']} — {p['title']}   approved={p['approved']} "
+                     f"reviewed={bool(p['reviewed_at'])}")
+        for i in jarvis_db.list_items(conn, p["id"]):
+            lines.append(f"  {i['id']:<14} {i['status']:<12} {i['title'][:64]}")
+            note = [l for l in (i["notes"] or "").splitlines() if l.strip()]
+            if note:
+                lines.append(f"      note: {note[-1][:160]}")
+    return "\n".join(lines) or "(no plans)"
+
+
+def do_falsify(plan_id: str, fix: bool = False, log=print) -> int:
+    """Could any verify pass with the work left undone? Returns how many could.
+
+    The consistency review asks whether the items contradict each other. This asks the
+    other question — whether the checks would notice if the code were never written —
+    and it is the failure this team actually ships: five of DOCS's seven verifies could
+    not fail, and every one of them reached `approved`.
+    """
+    conn = jarvis_db.open_db()
+    if jarvis_db.get_plan(conn, plan_id) is None:
+        raise SystemExit(f"no such plan: {plan_id}")
+    block = "\n\n".join(
+        f"{i['id']}: {i['title']}\n  verify: {i['verify'] or '(none)'}\n"
+        f"  detail: {(i['detail'] or '')[:400]}"
+        for i in jarvis_db.list_items(conn, plan_id))
+    prompt = FALSIFY_PROMPT.format(plan=block)
+    try:
+        reply, ms = llm.timed_chat("director", prompt, max_tokens=REPAIR_TOKENS,
+                                   temperature=0.3)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  director unavailable: {exc}")
+        return 0
+    jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
+                      ms=ms, plan_id=plan_id, engine=":8081")
+
+    findings = [f for f in ((llm.extract_json(reply) or {}).get("findings") or [])
+                if isinstance(f, dict) and f.get("id")]
+    if not findings:
+        log("  every verify can fail on its own — nothing to strengthen")
+        return 0
+
+    log(f"  {len(findings)} verify command(s) could pass with the work missing:")
+    replaced = 0
+    for f in findings:
+        log(f"    {f['id']}: {str(f.get('why'))[:150]}")
+        stronger = clean_verify(str(f.get("stronger_verify") or ""))
+        if not stronger:
+            continue
+        log(f"       stronger: {stronger[:150]}")
+        if fix and conn.execute("SELECT 1 FROM work_items WHERE id=?",
+                                (f["id"],)).fetchone():
+            with conn:
+                conn.execute("UPDATE work_items SET verify=?, updated=? WHERE id=?",
+                             (stronger, time.time(), f["id"]))
+            replaced += 1
+    if fix and replaced:
+        with conn:
+            conn.execute("UPDATE plans SET consistent=NULL, reviewed_at=NULL, updated=?"
+                         " WHERE id=?", (time.time(), plan_id))
+        log(f"  replaced {replaced} verify command(s); the plan is no longer the one that "
+            f"was reviewed:\n    python3 devteam.py review {plan_id}")
+    return len(findings)
+
+
+def do_triage(plan_id: str | None = None, log=print) -> None:
+    """Ask the director to read the board and say what is stuck, and why.
+
+    This is the local reasoner doing what a cloud agent would otherwise be paid to do on
+    every overwatch tick: read the state, find the stall, propose the fix. R1 is the
+    model the owner wants used to capacity, and this is a job it is good at.
+    """
+    conn = jarvis_db.open_db()
+    board = _board_text(conn, plan_id)
+    rows = list(conn.execute(
+        "SELECT ts, role, item_id, output FROM runs WHERE ok=0"
+        " ORDER BY CAST(ts AS REAL) DESC LIMIT 8"))
+    runs = "\n".join(
+        f"  {time.strftime('%m-%d %H:%M', time.localtime(float(r['ts'])))} "
+        f"{r['role']} {r['item_id'] or '-'}: {str(r['output'] or '')[:300]}"
+        for r in rows) or "  (no failures recorded)"
+
+    prompt = TRIAGE_PROMPT.format(board=board, runs=runs)
+    try:
+        reply, ms = llm.timed_chat("director", prompt, max_tokens=REPAIR_TOKENS,
+                                   temperature=0.3)
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"director unavailable: {exc}") from None
+    jarvis_db.log_run(conn, role="director", prompt=prompt, output=reply, ok=bool(reply),
+                      ms=ms, plan_id=plan_id, engine=":8081")
+
+    data = llm.extract_json(reply) or {}
+    print(f"\n{data.get('summary') or reply[:400]}\n")
+    for a in [a for a in (data.get("actions") or []) if isinstance(a, dict)]:
+        print(f"  [{a.get('kind', 'none')}] {a.get('id', '-')}: {a.get('why', '')}")
+    if not data.get("healthy"):
+        print("\n  apply a respec by hand:  "
+              "python3 devteam.py respec <id> --detail '...' --verify '...'")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1576,6 +1781,8 @@ def main() -> int:
     a = sub.add_parser("approve", help="approve a plan for execution")
     a.add_argument("plan_id")
     a.add_argument("--note")
+    a.add_argument("--force", action="store_true",
+                   help="approve even though the lint found hard failures")
 
     v = sub.add_parser("review",
                        help="architect sanity-checks the plan for contradictions")
@@ -1596,6 +1803,15 @@ def main() -> int:
     l.add_argument("plan_id")
 
     doc = sub.add_parser("doctor", help="check the sandbox and the lanes")
+
+    fa = sub.add_parser("falsify",
+                        help="adversarial pass: could any verify pass without the work?")
+    fa.add_argument("plan_id")
+    fa.add_argument("--fix", action="store_true",
+                    help="replace the weak commands the pass identifies")
+
+    tr = sub.add_parser("triage", help="ask the director what is stuck, and why")
+    tr.add_argument("plan_id", nargs="?")
 
     ap_ = sub.add_parser("autopilot",
                          help="work whatever is ready across all runnable plans (timer entry)")
@@ -1636,6 +1852,16 @@ def main() -> int:
     if args.cmd == "plan":
         do_plan(args.brief, args.workspace, args.id, args.title)
     elif args.cmd == "approve":
+        # Approval is the last gate before the coder starts, so the checks that can be
+        # made mechanically are made HERE. lint_plan reports verifies that cannot fail
+        # and verifies that import a package the environment does not have; both mean
+        # the item cannot do its job, and approving anyway just spends the team's time.
+        print(f"checking {args.plan_id} before approving:")
+        hard = lint_plan(args.plan_id, log=print)
+        if hard and not args.force:
+            raise SystemExit(
+                f"\nrefusing to approve {args.plan_id}: {hard} hard failure(s) above.\n"
+                f"  Fix them (re-plan the item, or respec it), or override with --force.")
         conn = jarvis_db.open_db()
         jarvis_db.approve_plan(conn, args.plan_id, args.note)
         print(f"approved {args.plan_id}")
@@ -1662,6 +1888,10 @@ def main() -> int:
     elif args.cmd == "lint":
         bad = lint_plan(args.plan_id, log=print)
         raise SystemExit(1 if bad else 0)
+    elif args.cmd == "falsify":
+        raise SystemExit(1 if do_falsify(args.plan_id, fix=args.fix) else 0)
+    elif args.cmd == "triage":
+        do_triage(args.plan_id)
     elif args.cmd == "doctor":
         st = sandbox.status()
         print("sandbox:")
