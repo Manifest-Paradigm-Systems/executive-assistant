@@ -85,17 +85,22 @@ class Diagnosis:
 def _harness_raised(text: str) -> str:
     """The first traceback frame pointing inside this program, if there is one.
 
+    Absolute paths only: see the note in the loop.
+
     A frame in this directory means OUR code raised — not the code under test, and not
     the verify command. That distinction is the difference between "the coder has work
     to do" and "the harness is broken", and the three crash bugs of 2026-09-13 all
     looked like the former while being the latter.
     """
     for match in _FRAME.finditer(text or ""):
-        try:
-            path = os.path.abspath(match.group(1))
-        except (OSError, ValueError):
+        path = match.group(1)
+        # Only an ABSOLUTE path can name a file in this program. `abspath()` here would
+        # resolve "<string>" — the frame a `python3 -c` verify always shows — against
+        # the process's working directory, which IS the harness directory, so every
+        # ordinary verify traceback would be reported as our own code raising.
+        if not os.path.isabs(path):
             continue
-        if path.startswith(_HARNESS_DIR + os.sep):
+        if os.path.normpath(path).startswith(_HARNESS_DIR + os.sep):
             return f"{os.path.basename(path)}:{match.group(2)}"
     return ""
 

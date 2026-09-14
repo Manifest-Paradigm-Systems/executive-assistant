@@ -84,6 +84,15 @@ CORPUS = [
         "clobber", diagnose.CODER,
     ),
     (
+        "an ordinary verify traceback, whose deepest frame is the -c string",
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        '  File "/work/documents/fill.py", line 14, in fill_form\n'
+        "    for field in fields:\n"
+        "TypeError: 'method' object is not iterable",
+        "unknown", diagnose.CODER,
+    ),
+    (
         "the deprecated name for a library the image already has (PyPDF2 vs pypdf)",
         "documents/inspect.py:1: in <module>\n"
         "    import PyPDF2\n"
@@ -136,6 +145,30 @@ def run():
     check("a harness fault stops the item", harness.stops_the_item is True)
     check("and is not blamed on the coder",
           "not the item's fault" in harness.advice, harness.advice)
+
+    print("\n-- a relative frame path is not our code --")
+    # The live false positive: `File "<string>", line 1` is what a `python3 -c` verify
+    # always shows, and abspath() turned it into a path inside the harness directory.
+    verify_tb = ('Traceback (most recent call last):\n'
+                 '  File "<string>", line 1, in <module>\n'
+                 '  File "/work/documents/fill.py", line 14, in fill_form\n'
+                 "TypeError: 'method' object is not iterable")
+    check("a verify traceback is not a harness fault",
+          diagnose.classify(verify_tb).owner == diagnose.CODER,
+          diagnose.classify(verify_tb).owner)
+    check("and it does not stop the item",
+          diagnose.classify(verify_tb).stops_the_item is False)
+    # A REAL harness frame is absolute, and must still be caught.
+    real = ('Traceback (most recent call last):\n'
+            '  File "/var/home/admin/jarvis/brain/devteam.py", line 890, in run_item\n'
+            "NameError: name 'data' is not defined")
+    check("an absolute frame in the harness still is one",
+          diagnose.classify(real).owner == diagnose.HARNESS)
+    relative_to_us = ('Traceback (most recent call last):\n'
+                      '  File "devteam.py", line 12, in x\n'
+                      "TypeError: nope")
+    check("and a relative frame naming our file is not misread either",
+          diagnose.classify(relative_to_us).owner == diagnose.CODER)
 
     print("\n-- a plan-provided module is not an operator problem --")
     provided = diagnose.classify("ModuleNotFoundError: No module named 'documents'",
