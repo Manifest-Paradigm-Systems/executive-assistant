@@ -62,21 +62,15 @@ DIRECTOR_TOKENS = int(os.getenv("DEVTEAM_DIRECTOR_TOKENS", "12000"))
 REPAIR_TOKENS = int(os.getenv("DEVTEAM_REPAIR_TOKENS", "8000"))
 VERIFY_TIMEOUT = int(os.getenv("DEVTEAM_VERIFY_TIMEOUT", "300"))
 FILE_LIST_LIMIT = 120
-INLINE_FILE_LIMIT = 6000          # bytes of an existing file worth showing the coder
+# The coder slot is 32k (see /props), and a prompt that has to quote an existing file
+# spends most of its budget on that file. 6k was tight enough that the coder could be
+# shown the first half of a file it was expected to edit whole.
+INLINE_FILE_LIMIT = 16000         # bytes of an existing file worth showing the coder
 
 
 # ------------------------------------------------------------------ prompts
 
 DIRECTOR_PROMPT = """You are the DIRECTOR planning work for a small engineering team. You do not write code.
-
-BRIEF:
-{brief}
-
-WORKSPACE: {workspace}
-
-WHAT ALREADY EXISTS IN THE WORKSPACE — do not re-create any of it, and do not assume
-anything else is present:
-{listing}
 
 Break this into work items. HARD CONSTRAINTS:
 
@@ -132,6 +126,15 @@ Break this into work items. HARD CONSTRAINTS:
    looks fine. To add a function to something an earlier item created, name the exact file
    — `thing/__init__.py`, not `thing.py`. Getting this wrong has cost this team four items.
 
+THE BRIEF:
+{brief}
+
+WORKSPACE: {workspace}
+
+WHAT ALREADY EXISTS IN THE WORKSPACE — do not re-create any of it, and do not assume
+anything else is present:
+{listing}
+
 Reply with ONE JSON object and no markdown fence:
 {{
   "title": "<short plan title>",
@@ -148,6 +151,29 @@ Reply with ONE JSON object and no markdown fence:
 
 CODER_PROMPT = """You are the CODER on a small team, working on a real machine. You write complete, working code.
 
+RULES — these are hard:
+1. Write COMPLETE file contents. Never emit "..." or "# rest of the file unchanged"
+   or a placeholder. Every line of every file you write is in your reply.
+2. Only create or modify files inside the workspace. Use paths RELATIVE to it.
+3. Prefer creating a NEW file over editing an existing one.
+4. Dependencies are FIXED. The sandbox that runs your verify has no network, so use
+   only the standard library plus these: pypdf, pdfplumber, PyMuPDF (`import fitz`),
+   reportlab, Pillow, pytest. Import anything else and the item cannot pass.
+5. Keep it small enough to be correct. A working 40-line file beats a broken 400-line one.
+6. Match the interface in the item specification exactly — other items depend on it.
+
+Reply with ONE JSON object and no markdown fence:
+{{
+  "status": "ok" or "failed",
+  "files": [{{"path": "relative/path.py", "content": "<the complete file>"}}],
+  "diffs": [],
+  "verify": "<one shell command that exits 0 iff your work is correct>",
+  "notes": "<two sentences: what you did, and anything you are unsure about>"
+}}
+
+
+YOUR TASK:
+
 WORK ITEM {item_id}: {title}
 
 {detail}
@@ -161,25 +187,7 @@ this exact contract at the same time:
 
 FILES ALREADY PRESENT:
 {listing}
-{context}
-
-RULES — these are hard:
-1. Write COMPLETE file contents. Never emit "..." or "# rest of the file unchanged"
-   or a placeholder. Every line of every file you write is in your reply.
-2. Only create or modify files inside the workspace. Use paths RELATIVE to it.
-3. Prefer creating a NEW file over editing an existing one.
-4. Python standard library only. No network calls at import time.
-5. Keep it small enough to be correct. A working 40-line file beats a broken 400-line one.
-6. Match the interface in the item specification exactly — other items depend on it.
-
-Reply with ONE JSON object and no markdown fence:
-{{
-  "status": "ok" or "failed",
-  "files": [{{"path": "relative/path.py", "content": "<the complete file>"}}],
-  "diffs": [],
-  "verify": "<one shell command that exits 0 iff your work is correct>",
-  "notes": "<two sentences: what you did, and anything you are unsure about>"
-}}"""
+{context}"""
 
 REVIEW_PROMPT = """You are the DIRECTOR. You are reviewing a plan for internal consistency BEFORE any code is written.
 

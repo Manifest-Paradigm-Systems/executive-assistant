@@ -388,6 +388,18 @@ def run():
     check("and the repair budget is not a one-liner cap",
           devteam.REPAIR_TOKENS >= 4000, devteam.REPAIR_TOKENS)
 
+    print("\n-- prompt prefix stability (a cached prefix is the only cheap context) --")
+    # llama.cpp reuses the cache up to the first differing token. With the rules first
+    # and the per-call content last, that shared prefix is the big half of the prompt.
+    check("DIRECTOR_PROMPT leads with its invariant half",
+          devteam.DIRECTOR_PROMPT.index("HARD CONSTRAINTS")
+          < devteam.DIRECTOR_PROMPT.index("{brief}"))
+    check("CODER_PROMPT leads with its rules",
+          devteam.CODER_PROMPT.index("RULES — these are hard")
+          < devteam.CODER_PROMPT.index("{item_id}"))
+    check("and the coder is told which libraries exist, not that none do",
+          "pypdf" in devteam.CODER_PROMPT and "standard library only" not in devteam.CODER_PROMPT)
+
     shutil.rmtree(ws, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 
