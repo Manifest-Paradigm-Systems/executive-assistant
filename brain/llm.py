@@ -135,7 +135,11 @@ def extract_json(text: str) -> dict | None:
 # systemd unit does not export it and a developer running devteam.py by hand should get
 # the same behaviour as the timer.
 CLOUD_URL = os.getenv("JARVIS_CLOUD_URL", "https://openrouter.ai/api/v1")
-CLOUD_MODEL = os.getenv("JARVIS_CLOUD_MODEL", "deepseek/deepseek-v4-flash")
+# Pinned, not floating: `deepseek/deepseek-v4-flash` resolved to V4 Flash 0423 — the
+# April model — while DeepSeek's own API uses that legacy name for V4.1 Flash. The
+# `~deepseek/...-latest` aliases exist, but an adjudicator whose verdicts stop plans
+# should not change model without somebody deciding that.
+CLOUD_MODEL = os.getenv("JARVIS_CLOUD_MODEL", "deepseek/deepseek-v4.1-flash")
 _ENV_FILE = os.getenv("JARVIS_ENV_FILE",
                       os.path.expanduser("~/jarvis/brain/brain.env"))
 
