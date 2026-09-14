@@ -418,6 +418,10 @@ def run():
         check("a director consult resets the count, so a respec starts clean",
               devteam._attempts(conn, "G-1") == 0)
         spent("editor")
+        spent("respec")
+        check("a hand-issued respec is a boundary too — the correction gets tried",
+              devteam._attempts(conn, "G-1") == 0)
+        spent("editor")
         check("and counting resumes after it", devteam._attempts(conn, "G-1") == 1)
         check("attempts do not leak between items", devteam._attempts(conn, "G-2") == 0)
     finally:

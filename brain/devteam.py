@@ -976,13 +976,15 @@ def _attempts(conn, item_id: str) -> int:
     there would retry the same executor forever and never reach either the
     three-strike escalation or the alternate executor.
 
-    The boundary is the last director consult. The repair pass that follows one
-    either re-specs the item or blocks it, so a fresh specification starts at zero
-    without needing a schema change or a respec flag.
+    The boundary is the last director consult OR the last hand-issued respec. The
+    repair pass that follows a consult either re-specs the item or blocks it, and a
+    respec from the command line is equally a new specification — without counting it
+    as a boundary, a corrected item resumes at three attempts spent, goes straight back
+    to the director, and the correction is never tried at all.
     """
     boundary = conn.execute(
         "SELECT COALESCE(MAX(CAST(ts AS REAL)), 0) t FROM runs"
-        " WHERE item_id=? AND role='director'", (item_id,)).fetchone()["t"]
+        " WHERE item_id=? AND role IN ('director', 'respec')", (item_id,)).fetchone()["t"]
     return conn.execute(
         "SELECT count(*) n FROM runs WHERE item_id=? AND role IN ('coder','editor')"
         " AND CAST(ts AS REAL) > ?", (item_id, boundary)).fetchone()["n"]
@@ -2114,6 +2116,12 @@ def main() -> int:
                 conn.execute("UPDATE plans SET consistent=NULL, reviewed_at=NULL, updated=?"
                              " WHERE id=?", (time.time(), row["plan_id"]))
             print(f"  re-review required: python3 devteam.py review {row['plan_id']}")
+        # Record the respec so _attempts treats it as a boundary. Without this the
+        # corrected specification is never actually attempted.
+        jarvis_db.log_run(conn, role="respec",
+                          prompt=f"respec {args.item_id}: {', '.join(fields) or 'deps cleared'}",
+                          output="new specification; attempts reset", ok=True, ms=0,
+                          plan_id=row["plan_id"], item_id=args.item_id, engine="cli")
         print(f"updated {args.item_id}: {', '.join(fields) or 'dependencies cleared'}")
     elif args.cmd == "item":
         conn = jarvis_db.open_db()
